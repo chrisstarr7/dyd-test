@@ -43,7 +43,7 @@ description: >
 
 1. 需求评审：读文档，逐项提取模块/入口/字段/口径/权限/状态流转，生成 REQ-001… 清单与待确认项。
 2. 用例设计：覆盖正常/边界/异常/权限/回归五类，解析并复用已有用例，建立需求覆盖矩阵。
-3. 提测准入：预检 agent-browser、URL、登录、冒烟、增量 SQL、版本与权限。
+3. 提测准入：预检 agent-browser（缺失时先按下方"浏览器执行"小节 bootstrap）、URL、登录、冒烟、增量 SQL、版本与权限。
 4. 测试执行：按"数据口径 → 主流程 → 边界/异常 → 权限 → 回归"顺序，真实操作并比对结果。
 5. 缺陷闭环：按 P0–P4 分级，复现、关联、回归、关闭或激活重提。
 6. 发布审批与上线：记录审批与发布验证结论。
@@ -68,8 +68,13 @@ python scripts/qa.py redact --dir <run>
 
 ## 浏览器执行
 
-用 `agent-browser`（本地已装 0.44.0），先 `agent-browser skills get core` 再操作。
-不得凭记忆编造 CLI 命令。默认 Headless，用户可指定 Headed。
+用 `agent-browser`。首次使用或命令不存在时先运行 bootstrap 自动安装：
+
+- Windows：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1`
+- macOS：`sh scripts/bootstrap.sh`
+
+装好后先 `agent-browser skills get core` 再操作，不得凭记忆编造 CLI 命令。
+默认 Headless，用户可指定 Headed。
 
 - 每个页面操作前取快照，按实际 ref 定位，不假设元素存在、不复用失效引用。
 - 新增后核对列表/详情；修改后核对最新值；删除后核对消失；取消后核对无脏数据。
