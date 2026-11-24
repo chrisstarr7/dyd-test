@@ -16,12 +16,12 @@ npx -y skills add chrisstarr7/dyd-test -g -a codex
 
 `-g` 表示全局安装，安装后重启 Codex 或新建会话。Skill 只使用系统内置浏览器与本地结构化文件，不要求额外后台服务。
 
-首次执行测试时，Skill 会自动安装 `agent-browser` 及其浏览器运行时（幂等，可重复执行）：
+首次执行测试时，Skill 会自动安装 `agent-browser` 及其浏览器运行时；已安装时自动检测并升级到最新版（幂等，可重复执行）：
 
 - Windows：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1`
 - macOS：`sh scripts/bootstrap.sh`
 
-也可手动安装：`npm i -g agent-browser && agent-browser install`。
+也可手动安装或升级：`npm i -g agent-browser@latest && agent-browser install`。
 
 ## 单指令启动
 

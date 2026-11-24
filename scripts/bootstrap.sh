@@ -1,11 +1,27 @@
 #!/usr/bin/env sh
 set -e
 
-VERSION="0.44.0"
+installed() {
+    if command -v agent-browser >/dev/null 2>&1; then
+        agent-browser --version 2>/dev/null | sed -E 's/^agent-browser[[:space:]]*//'
+    fi
+}
 
-if ! command -v agent-browser >/dev/null 2>&1; then
-    echo "agent-browser not found; installing agent-browser@${VERSION} ..."
-    npm i -g "agent-browser@${VERSION}"
+latest() {
+    npm view agent-browser version 2>/dev/null
+}
+
+cur="$(installed)"
+new="$(latest)"
+
+if [ -z "$cur" ]; then
+    echo "agent-browser not found; installing latest ..."
+    npm i -g agent-browser@latest
+elif [ -n "$new" ] && [ "$cur" != "$new" ]; then
+    echo "agent-browser update available: $cur -> $new; updating ..."
+    npm i -g agent-browser@latest
+else
+    echo "agent-browser $cur is current."
 fi
 
 NPM_BIN="$(npm prefix -g)/bin"

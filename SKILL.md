@@ -68,12 +68,13 @@ python scripts/qa.py redact --dir <run>
 
 ## 浏览器执行
 
-用 `agent-browser`。首次使用或命令不存在时先运行 bootstrap 自动安装：
+用 `agent-browser`。首次使用、命令不存在或需要更新时先运行 bootstrap，它会安装/升级到最新版并补齐浏览器运行时：
 
 - Windows：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1`
 - macOS：`sh scripts/bootstrap.sh`
 
-装好后先 `agent-browser skills get core` 再操作，不得凭记忆编造 CLI 命令。
+装好后先 `agent-browser skills get core` 再操作，不得凭记忆编造 CLI 命令；
+`skills get core` 的内容由 CLI 自带且与版本强匹配，dyd-test 不硬编码命令，始终以本机 CLI 输出为准。
 默认 Headless，用户可指定 Headed。
 
 - 每个页面操作前取快照，按实际 ref 定位，不假设元素存在、不复用失效引用。
