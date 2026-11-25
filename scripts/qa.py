@@ -20,6 +20,7 @@ from qa_contract import check_page, check_plan, check_result, digest, evidence_f
 from qa_fixtures import (
     close_fixture, fixture_cases, load_context, mutation_effect, operation, prepare, reconcile, review_fixtures, verify_attempt,
 )
+from qa_matrix import LAYER_LABELS, is_nondeterministic, review as review_matrix, validate_plan
 from qa_plan import check_dependencies, coverage_gaps, freeze, review_obligations, verify_frozen
 from qa_release import review_admission, review_defects
 from qa_risk import review_risks
@@ -198,6 +199,7 @@ def cmd_check_cases(args):
             operation(run, case)
         except ValueError as error:
             problems.append(f"用例 {case_id}：{error}")
+        problems.extend(validate_plan(case))
     if problems:
         print("\n".join(problems))
         raise SystemExit(1)
@@ -279,6 +281,13 @@ def evaluate(directory, run, case, pages, criteria, observation, context=None):
                 observed["effect"] = effect
                 if not effect["verified"]:
                     calculated = "failed"
+    if is_nondeterministic(case):
+        matrix = review_matrix(directory, run, case)
+        observed["matrix"] = matrix["summary"]
+        if matrix["sha256"]:
+            fingerprints["matrix"] = matrix["sha256"]
+        if not matrix["passed"]:
+            calculated = "failed"
     return calculated, fingerprints, observed
 
 
@@ -616,6 +625,14 @@ def assess(directory):
             state = "unknown"
         results[case_id] = {**record, "state": state}
 
+    matrix_reviews = {
+        case_id: (result.get("observation") or {}).get("matrix")
+        for case_id, result in results.items()
+        if isinstance((result.get("observation") or {}).get("matrix"), dict)
+    }
+    for case_id, matrix in matrix_reviews.items():
+        reasons.extend(f"非确定矩阵 {case_id}：{error}" for error in matrix.get("errors", []))
+
     for defect in ([] if strict else defects):
         severity = defect.get("severity")
         if defect.get("status") == "closed":
@@ -687,6 +704,9 @@ def assess(directory):
         "criterion_count": len(criteria),
         "defects_by_severity": {s: sum(1 for x in defects if x.get("severity") == s) for s in DEFECT_SEVERITIES},
         "open_defects_by_severity": {s: sum(1 for x in defects if x.get("severity") == s and x.get("status") != "closed") for s in DEFECT_SEVERITIES},
+        "matrix_cases": len(matrix_reviews),
+        "matrix_observations": sum(matrix.get("observations", 0) for matrix in matrix_reviews.values()),
+        "matrix_flaky_cases": sum(bool(matrix.get("flaky")) for matrix in matrix_reviews.values()),
     }
     for name, keys in (("design_coverage", covered), ("execution_coverage", completed), ("pass_rate", passed_criteria)):
         stats[f"criterion_{name}"] = ratio(len(keys), len(criteria))
@@ -702,7 +722,8 @@ def assess(directory):
     return {"run": run, "cases": cases, "results": results, "defects": defects, "stats": stats, "gate": gate,
             "criteria": criteria, "sources": sources, "covered": covered,
             "completed": completed, "passed_criteria": passed_criteria, "fixtures": fixture_entries,
-            "history": history, "risk_review": risk_review, "flows": flows}
+            "history": history, "risk_review": risk_review, "flows": flows,
+            "matrix_reviews": matrix_reviews}
 
 
 def cmd_stats(args):
@@ -779,6 +800,20 @@ def format_report(review):
                 "criterion_design_coverage", "criterion_execution_coverage", "criterion_pass_rate"):
         value = stats[key] if stats[key] is not None else "无有效统计数据"
         lines.append(f"- {key}：{value}")
+    if review.get("matrix_reviews"):
+        roles = {"positive": "正向对照", "negative": "负向对照", "sample": "样本"}
+        lines += ["", "## 非确定功能矩阵"]
+        for case_id, matrix in review["matrix_reviews"].items():
+            state = "不稳定" if matrix.get("flaky") else ("通过" if matrix.get("passed") else "未通过")
+            lines.append(f"- {case_id} · {matrix.get('kind')} · {matrix.get('queries')} 查询"
+                         f" × {matrix.get('repeats')} 次 · {state}")
+            for item in matrix.get("items", []):
+                layers = "、".join(LAYER_LABELS.get(layer, layer) for layer in item.get("layers", []))
+                suffix = f" · 失败层 {layers}" if layers else ""
+                lines.append(f"  - {item.get('id')} · {roles.get(item.get('role'), item.get('role'))}"
+                             f" · {item.get('intent')} · {item.get('prompt_length')}"
+                             f" · 命中 {item.get('matched')}/{item.get('repeats')}{suffix}")
+            lines.extend(f"  - 阻断：{error}" for error in matrix.get("errors", []))
     lines += ["", "## PRD 验收点"]
     for key, (req_id, criterion) in review["criteria"].items():
         status = ("通过" if key in review["passed_criteria"] else "断言失败" if key in review["completed"]

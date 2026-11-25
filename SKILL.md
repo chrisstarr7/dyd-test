@@ -49,6 +49,21 @@ description: >
 6. 发布审批与上线：记录审批与发布验证结论。
 7. 上线后收尾：数据巡检、权限配置、培训与周报。
 
+## 非确定功能（强制）
+
+召回、排序、搜索、推荐和 AI 生成不得用一两条自然语言结果直接下结论。执行前先读
+[非确定功能测试矩阵](references/nondeterministic-testing.md)，用例声明
+`test_kind`（`recall | ranking | search | generative`）并冻结 `matrix`：
+
+- 固定账号身份、租户、项目、版本、入口、数据状态和索引是否预热。
+- 至少 2 次重复，至少 3 种业务意图，覆盖 short/medium/long，并有正负对照。
+- 对照项只能改变一个因子；short/long 长度对照必须同意图、同负载、同主题。
+- 召回必须分开记录 `search_invoked`、`retrieved`、`injected`、`dropped`、
+  `citation_delta` 和最终 `actual`；失败按决策、检索、注入、引用、断言分层。
+- 单样本、缺对照、多因子混测或重复结果不一致时不得 PASS；`qa.py` 会阻断。
+- 短指令命中而长指令稳定不命中，只能描述为条件性问题并给出影响范围，不得扩大为
+  “整个功能不可用”，也不得缩小为“已有命中所以通过”。
+
 ## 确定性脚本（必须用，不要用大模型统计）
 
 先读 [PRD 验收、浏览器采集与发布准入](references/acceptance-contract.md)。从原文建立范围索引、验收点和风险场景，只读发现页面后冻结计划，再执行测试。旧格式用来回看历史运行。
@@ -129,3 +144,4 @@ P0/P1 未闭环、P2 未让步接收、数据核对缺失、PASS 无证据、环
 ## 详细规范
 
 - 七阶段输入/输出/出口条件与缺陷分级：`references/testing-workflow.md`
+- 召回、排序、搜索与生成类受控矩阵：`references/nondeterministic-testing.md`

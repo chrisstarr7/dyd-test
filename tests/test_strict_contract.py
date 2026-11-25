@@ -264,6 +264,33 @@ class TestStrictContract(unittest.TestCase):
         qa.dump_json(self.run / path, data)
         self.assertEqual(qa.assess(self.run)["results"]["TC-001"]["state"], "unknown")
 
+    def test_nondeterministic_case_cannot_pass_without_complete_matrix(self):
+        from test_matrix import default_row, matrix_plan
+
+        self.assure("targeted")
+        plan = matrix_plan()
+        plan["id"] = "TC-001"
+        plan["matrix"]["environment"].update(url=URL, version="v1")
+        self.case.update(test_kind="recall", matrix=plan["matrix"])
+        self.assertEqual(self.freeze(), 0)
+        self.assertNotEqual(self.record(self.sample("matrix-missing.json")), 0)
+        (self.run / "evidence").mkdir()
+        rows = []
+        for query in plan["matrix"]["queries"]:
+            for repeat in (1, 2):
+                row = default_row(query, repeat)
+                rows.append(row)
+                (self.run / row["evidence"]).write_text("{}", encoding="utf-8")
+        qa.dump_json(self.run / "evidence" / "matrix.json", {
+            "case_id": "TC-001",
+            "environment": plan["matrix"]["environment"],
+            "queries": rows,
+        })
+        self.assertEqual(self.record(self.sample("matrix-result.json")), 0)
+        review = qa.assess(self.run)
+        self.assertTrue(review["results"]["TC-001"]["observation"]["matrix"]["passed"])
+        self.assertFalse(review["matrix_reviews"]["TC-001"]["flaky"])
+
     def test_unmapped_prd_and_plan_edits_are_blocked(self):
         prd = self.run / "prd.md"
         prd.write_text("第一条。\n第二条缺少验收。\n", encoding="utf-8")

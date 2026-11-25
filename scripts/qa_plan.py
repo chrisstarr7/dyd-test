@@ -5,6 +5,7 @@ import re
 
 from qa_browser import LAYERS, browser_page, browser_probe, redact_data, redacted_measurement
 from qa_contract import check_plan, digest, evidence_file, index_objects, text
+from qa_matrix import validate_plan
 from qa_oracle import probes, valid_check
 from qa_risk import review_risks
 
@@ -211,6 +212,11 @@ def plan_fingerprint(directory, run, requirements, cases, pages):
         check_dependencies(planned)
     if full:
         check_flows(scope, planned)
+
+    for case in planned.values():
+        errors = validate_plan(case)
+        if errors:
+            raise ValueError("；".join(errors))
 
     coverage = {key: set() for key in criteria}
     for page in pages.values():

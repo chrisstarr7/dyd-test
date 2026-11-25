@@ -20,6 +20,10 @@
 
 文件中的有效行必须全部处置，范围不能重叠。将可独立失败的规则拆成独立验收点。用 `risk` 标记 `high`、`medium` 或 `low`，用 `scenarios` 明确哪些场景必须覆盖。按语义选择正常、边界、异常、角色、回归。有计算时在执行前固定公式、来源、单位和精度。专项或回归模式中，高风险验收点只安排一种场景须提供 `risk_note`。非必测验收点需要 `required: false`、`scope_note` 和 `scope_decision`。
 
+召回、排序、搜索、推荐或 AI 生成类验收点不能只安排一条自然语言用例。先按
+[非确定功能测试矩阵](nondeterministic-testing.md) 冻结 `test_kind`、对照、重复次数和
+失败分层证据，再进入用例冻结。
+
 ### 新运行的完整模式
 
 - 保存完整 PRD 与引用内容的可核验导出。`prd-scope.json` 的 `source_complete: true` 表示已核对版本、正文及引用附件。资料缺失时记 `false`，先测独立场景。`pending` 行段填写 `reason`。范围内验收点均为必测。范围排除或待确认内容会阻止 `full` 给出完整验收通过。
