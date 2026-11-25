@@ -58,14 +58,14 @@ npx -y skills add chrisstarr7/dyd-test -g -a codex
 python scripts/qa.py init --project <p> --url <u> --version <v> --mode full
 python scripts/qa.py parse-cases --file <用例.csv> --out <run>/test-cases.json
 python scripts/qa.py check-cases --cases <run>/test-cases.json --reqs <run>/requirements.json
-python scripts/qa.py record --dir <run> --case TC-001 --state passed --evidence screenshots/x.png
-python scripts/qa.py stats --dir <run>
-python scripts/qa.py gate --dir <run>
+python scripts/qa.py check-page --dir <run> --page PAGE-001 --url <实际URL> --role <实际角色> --snapshot evidence/page.txt
+python scripts/qa.py record --dir <run> --case TC-001 --state passed --result <run>/TC-001-result.json
 python scripts/qa.py report --dir <run>
-python scripts/qa.py redact --dir <run>
 ```
 
-统计与门禁只来自结构化记录，不由大模型从自然语言反推；零分母显示“无有效统计数据”，不显示 100%。以下任一成立不得给出“测试通过”：准入阻塞、关键需求未验证、必测用例未执行、P0/P1 未闭环、P2 未让步接收、数据核对缺失、PASS 无证据、环境/版本无法确认、记录矛盾。
+先按 [PRD 验收记录](references/acceptance-contract.md) 拆分验收点并关联实际页面。测试时核对浏览器路由、角色和页面特征，记录每项预期、实测值与证据。报告和看板从同一批有效记录计算验收点覆盖与门禁。
+
+空计划、必测项无用例或未完成、证据失效、准入缺失、P0/P1 未闭环、P2 无本版本书面让步时，门禁不通过。历史记录缺少新字段时仍可查看，无法据此重新判定通过。
 
 ## 本地模拟被测系统
 
@@ -85,7 +85,7 @@ python -m unittest discover -s tests -p "test_*.py"
 
 ## 输出目录
 
-`dyd-test-output/{project}/{run-id}/`：`run.json`、`requirements.json`、`test-cases.json`、`execution.jsonl`、`defects.json`、`preflight.json`、`stats.json`、`gate.json`、`report.md`、`dashboard.html`，以及 `screenshots/`、`videos/`、`logs/`。无数据字段写“未接入/未执行/无法验证/待确认”。
+`dyd-test-output/{project}/{run-id}/`：`run.json`、`requirements.json`、`test-cases.json`、`pages.json`、`execution.jsonl`、`defects.json`、`preflight.json`、`stats.json`、`gate.json`、`report.md`、`dashboard.html`，以及 `evidence/`、`screenshots/`、`videos/`、`logs/`。
 
 ### 测试结果看板
 

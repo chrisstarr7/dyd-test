@@ -9,26 +9,16 @@ sys.path.insert(0, str(SCRIPTS))
 
 import dashboard  # noqa: E402
 import qa  # noqa: E402
+from test_qa import acceptance_run, observation, run_qa
 
 
 class TestDashboard(unittest.TestCase):
     def test_build_html_from_run(self):
         with tempfile.TemporaryDirectory() as td:
-            out = Path(td)
-            qa.main(["init", "--project", "demo", "--run-id", "r1", "--dir", str(out)])
-            run = out / "demo" / "r1"
-            qa.dump_json(run / "requirements.json", [{"id": "REQ-001"}])
-            qa.dump_json(run / "test-cases.json", {"cases": [
-                {"id": "TC-001", "req": "REQ-001", "steps": ["1"], "expected": ["x"]}]})
-            qa.dump_json(run / "preflight.json", {"smoke": "passed"})
-            (run / "screenshots").mkdir()
-            ev = run / "screenshots" / "a.png"
-            ev.write_text("png", encoding="utf-8")
-            qa.main(["record", "--dir", str(run), "--case", "TC-001",
-                     "--state", "passed", "--evidence", str(ev)])
-            qa.main(["stats", "--dir", str(run)])
-            qa.main(["gate", "--dir", str(run)])
-            qa.main(["report", "--dir", str(run)])
+            run = acceptance_run(Path(td))
+            code, _ = run_qa("record", "--dir", str(run), "--case", "TC-001",
+                             "--state", "passed", "--result", observation(run))
+            self.assertEqual(code, 0)
 
             html = dashboard.build_html(run)
             self.assertIn("dyd-test 测试看板", html)
@@ -41,39 +31,33 @@ class TestDashboard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             qa.main(["init", "--project", "demo", "--run-id", "empty", "--dir", directory])
             html = dashboard.build_html(Path(directory) / "demo" / "empty")
-            self.assertIn("门禁待判定", html)
+            self.assertIn("门禁未通过", html)
             self.assertIn("暂无用例记录", html)
             self.assertIn("无数据", html)
             self.assertNotIn("100.00%", html)
 
-    def test_latest_case_state_and_safe_display(self):
+    def test_dashboard_and_report_reject_stale_gate(self):
         with tempfile.TemporaryDirectory() as directory:
-            qa.main(["init", "--project", "demo", "--run-id", "mixed", "--dir", directory])
-            run = Path(directory) / "demo" / "mixed"
-            qa.dump_json(run / "test-cases.json", {"cases": [
-                {"id": "TC-001", "title": "回归通过"},
-                {"id": "TC-002", "title": "<测试标题>"},
-                {"id": "TC-003", "title": "尚未执行"},
-            ]})
-            (run / "execution.jsonl").write_text(
-                '{"case_id":"TC-001","state":"failed"}\n'
-                '{"case_id":"TC-001","state":"passed"}\n'
-                '{"case_id":"TC-002","state":"failed","note":"金额 < 预期","defect_ids":["BUG-001"]}\n',
-                encoding="utf-8",
-            )
-            qa.dump_json(run / "gate.json", {"verdict": "fail", "reasons": ["缺少 <审批>"]})
-            (run / "report.md").write_text("原文 <测试>", encoding="utf-8")
+            run = acceptance_run(Path(directory))
+            args = ("record", "--dir", str(run), "--case", "TC-001")
+            code, _ = run_qa(*args, "--state", "passed", "--result", observation(run))
+            self.assertEqual(code, 0)
+            run_qa("report", "--dir", str(run))
+            self.assertEqual(qa.load_json(run / "gate.json")["verdict"], "pass")
+            code, _ = run_qa(*args, "--state", "failed", "--result", observation(run, actual=False),
+                             "--note", "金额 < 预期", "--defect", "BUG-001")
+            self.assertEqual(code, 0)
             html = dashboard.build_html(run)
             self.assertIn("门禁未通过", html)
-            self.assertIn("&lt;审批&gt;", html)
-            self.assertIn("原文 &lt;测试&gt;", html)
-            self.assertIn('data-state="planned"', html)
             self.assertEqual(html.count('data-state="failed"'), 1)
-            self.assertLess(html.index('data-state="failed"'), html.index('data-state="passed"'))
-            self.assertIn("&lt;测试标题&gt;", html)
+            self.assertNotIn("门禁通过", html)
+            self.assertIn("&lt;新增物料&gt;", html)
             self.assertIn("金额 &lt; 预期", html)
             self.assertIn("BUG-001", html)
-            self.assertNotIn("<测试标题>", html)
+            self.assertNotIn("<新增物料>", html)
+            run_qa("report", "--dir", str(run))
+            self.assertEqual(qa.load_json(run / "gate.json")["verdict"], "fail")
+            self.assertIn("预期 true，实测 false", (run / "report.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from string import Template
 
-from qa import load_json, read_execution
+from qa import assess, format_report
 
 
 CASE_LABELS = {
@@ -62,9 +62,9 @@ def outcome_chart(counts, total):
 
 def coverage_rows(stats):
     for key, label in (
-        ("requirement_design_coverage", "设计覆盖"),
-        ("requirement_execution_coverage", "执行覆盖"),
-        ("requirement_pass_rate", "需求通过"),
+        ("criterion_design_coverage", "设计覆盖"),
+        ("criterion_execution_coverage", "执行覆盖"),
+        ("criterion_pass_rate", "验收点通过"),
     ):
         ratio = stats.get(key)
         width = as_percent(ratio) or 0
@@ -104,26 +104,15 @@ def render_defect(defect):
 
 def build_html(directory: Path) -> str:
     """将测试记录渲染为可离线打开的独立 HTML。"""
-    run = load_json(directory / "run.json")
-    artifacts = {
-        name: load_json(directory / f"{name}.json")
-        for name in ("stats", "gate", "defects", "test-cases")
-        if (directory / f"{name}.json").exists()
-    }
-    stats = artifacts.get("stats", {})
-    gate = artifacts.get("gate", {})
-    defects = artifacts.get("defects", [])
-    cases_data = artifacts.get("test-cases", [])
-    cases = cases_data.get("cases", []) if isinstance(cases_data, dict) else cases_data
-    records = {record.get("case_id"): record for record in read_execution(directory / "execution.jsonl")}
+    review = assess(directory)
+    run, stats, gate = review["run"], review["stats"], review["gate"]
+    cases, records, defects = review["cases"], review["results"], review["defects"]
 
     rows = []
     counts = Counter()
-    for index, case in enumerate(cases):
-        case_id = case.get("id") or f"case-{index}"
-        record = records.get(case_id, {})
-        state = record.get("state", "planned")
-        state = state if state in CASE_LABELS else "unknown"
+    for case_id, case in cases.items():
+        record = records[case_id]
+        state = record["state"]
         counts[state] += 1
         rows.append((CASE_ORDER.index(state), render_case(case_id, case, record, state)))
     case_table = "".join(row for _, row in sorted(rows, key=lambda entry: entry[0]))
@@ -160,12 +149,10 @@ def build_html(directory: Path) -> str:
         defects, key=lambda defect: (defect.get("status") == "closed", defect.get("severity") or "Z")
     ))
     if not defect_table:
-        message = "暂无缺陷记录" if "defects" in artifacts else "未找到缺陷数据"
-        defect_table = f'<tr><td colspan="4" class="empty">{message}</td></tr>'
+        defect_table = '<tr><td colspan="4" class="empty">暂无缺陷记录</td></tr>'
     open_defects = sum(defect.get("status") != "closed" for defect in defects)
     critical = sum(defect.get("status") != "closed" and defect.get("severity") in ("P0", "P1") for defect in defects)
-    report_path = directory / "report.md"
-    report = report_path.read_text(encoding="utf-8") if report_path.exists() else "暂无报告原文"
+    report = format_report(review)
 
     return Template(Path(__file__).with_name("dashboard-template.html").read_text(encoding="utf-8")).substitute(
         project=esc(run.get("project") or "未命名项目"),
@@ -181,14 +168,15 @@ def build_html(directory: Path) -> str:
         legend=legend,
         execution_rate=pct(stats.get("case_execution_rate")),
         pass_rate=pct(stats.get("executed_case_pass_rate")),
-        requirements=esc(stats.get("requirement_count", "—")),
+        requirements=stats["requirement_count"],
+        criteria=stats["criterion_count"],
         coverage="".join(coverage_rows(stats)),
         options=options,
         case_table=case_table,
         defect_table=defect_table,
-        defect_count=len(defects) if "defects" in artifacts else "—",
-        open_defects=open_defects if "defects" in artifacts else "—",
-        critical=critical if "defects" in artifacts else "—",
+        defect_count=len(defects),
+        open_defects=open_defects,
+        critical=critical,
         report=esc(report),
     )
 

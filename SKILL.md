@@ -41,9 +41,9 @@ description: >
 每阶段先读 `references/testing-workflow.md` 中对应小节再执行，不要凭记忆臆造规则。
 每阶段结束用 `scripts/qa.py` 持久化结构化记录，统计只来自 `execution.jsonl`。
 
-1. 需求评审：读文档，逐项提取模块/入口/字段/口径/权限/状态流转，生成 REQ-001… 清单与待确认项。
-2. 用例设计：覆盖正常/边界/异常/权限/回归五类，解析并复用已有用例，建立需求覆盖矩阵。
-3. 提测准入：预检 agent-browser（缺失时先按下方"浏览器执行"小节 bootstrap）、URL、登录、冒烟、增量 SQL、版本与权限。
+1. 需求评审：逐条核对 PRD 与验收边界，保留原文出处，把可独立失败的行为拆成验收点。规则待确认仍保留，不计通过。
+2. 用例设计：按验收点和业务风险设计正常、边界、异常、角色与回归场景，先固定逐项预期，再执行。
+3. 提测准入：预检 agent-browser、URL、登录、冒烟、版本与增量 SQL。登录后先按 PRD 只读发现目标页面，核对实际路由、角色和至少两个页面特征。
 4. 测试执行：按"数据口径 → 主流程 → 边界/异常 → 权限 → 回归"顺序，真实操作并比对结果。
 5. 缺陷闭环：按 P0–P4 分级，复现、关联、回归、关闭或激活重提。
 6. 发布审批与上线：记录审批与发布验证结论。
@@ -51,20 +51,21 @@ description: >
 
 ## 确定性脚本（必须用，不要用大模型统计）
 
+先读 [PRD 验收记录](references/acceptance-contract.md)，按其中结构写入 `requirements.json`、`test-cases.json`、`pages.json` 和 `preflight.json`。
+
 ```bash
 python scripts/qa.py init --project <p> --url <u> --version <v> --mode full
 python scripts/qa.py parse-cases --file <用例.csv> --out <run>/test-cases.json
 python scripts/qa.py check-cases --cases <run>/test-cases.json --reqs <run>/requirements.json
-python scripts/qa.py record --dir <run> --case TC-001 --state passed --evidence screenshots/x.png
-python scripts/qa.py stats --dir <run>
-python scripts/qa.py gate --dir <run>
+python scripts/qa.py check-page --dir <run> --page PAGE-001 --url <实际URL> --role <实际角色> --snapshot evidence/page.txt
+python scripts/qa.py record --dir <run> --case TC-001 --state passed --result <run>/TC-001-result.json
 python scripts/qa.py report --dir <run>
-python scripts/qa.py redact --dir <run>
 python scripts/dashboard.py --dir <run>
 ```
 
 - 状态：`planned | passed | failed | blocked | skipped`。`planned` 不可直接记录。
-- `record` 对 `passed/failed` 强制要求证据文件存在且在任务目录内；`blocked/skipped` 必须有原因。
+- `record` 对 `passed/failed` 核对页面、逐项实测值和任务目录内的非空证据，并拒绝与断言不符的状态。证据先去敏再录入，复测另存；`blocked/skipped` 必须有原因。
+- `report` 从同一份核验结果更新统计、质量门禁和报告。门禁拒绝空计划、未覆盖或未完成的必测项、失效证据及无书面让步的 P2。
 - 统计公式与分母在 `qa.py` 内固定，零分母显示"无有效统计数据"，不显示 100%。
 
 ## 浏览器执行
@@ -78,7 +79,7 @@ python scripts/dashboard.py --dir <run>
 `skills get core` 的内容由 CLI 自带且与版本强匹配，dyd-test 不硬编码命令，始终以本机 CLI 输出为准。
 默认 Headless，用户可指定 Headed。
 
-- 每个页面操作前取快照，按实际 ref 定位，不假设元素存在、不复用失效引用。
+- 页面操作前取快照，按实际 ref 定位。执行用例前与切换页面后用 `check-page` 核对真实地址、角色和页面快照。页面歧义、角色不符或入口不可用时标记阻塞，禁止写入。
 - 新增后核对列表/详情；修改后核对最新值；删除后核对消失；取消后核对无脏数据。
 - 数据类需求先核对数据再验页面；计算用 Python Decimal，不让模型心算。
 - 每个普通操作不录像；交互缺陷才录复现视频。凭据不出现在命令行与报告中。
@@ -101,9 +102,9 @@ P0/P1 未闭环、P2 未让步接收、数据核对缺失、PASS 无证据、环
 
 ## 输出目录
 
-`dyd-test-output/{project}/{run-id}/`：`run.json`、`requirements.json`、`test-cases.json`、
+`dyd-test-output/{project}/{run-id}/`：`run.json`、`requirements.json`、`test-cases.json`、`pages.json`、
 `execution.jsonl`、`defects.json`、`preflight.json`、`stats.json`、`gate.json`、`report.md`、
-`dashboard.html`，以及 `screenshots/`、`videos/`、`logs/`。无数据字段写"未接入/未执行/无法验证/待确认"。
+`dashboard.html`，以及 `evidence/`、`screenshots/`、`videos/`、`logs/`。无数据字段写"未接入/未执行/无法验证/待确认"。
 
 ## 测试结果看板
 
@@ -112,7 +113,7 @@ P0/P1 未闭环、P2 未让步接收、数据核对缺失、PASS 无证据、环
 - Windows：`Start-Process -WindowStyle Hidden python -ArgumentList 'scripts/dashboard.py','--dir','<run>'`
 - macOS：`nohup python3 scripts/dashboard.py --dir <run> >/dev/null 2>&1 &`
 
-看板从 `stats.json`、`gate.json`、`defects.json`、`execution.jsonl`、`report.md` 生成 `dashboard.html`，
+看板从运行原始记录重新核验门禁并生成 `dashboard.html`，
 只监听 127.0.0.1 的本地端口（默认 8899，占用则自动递增），仅输出看板页，不暴露任务目录内其他文件。
 
 ## 断点恢复
