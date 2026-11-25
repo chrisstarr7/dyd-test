@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dyd-test 测试看板</title>
+<style>
+:root {
+  color-scheme: light;
+  --ink: #161e36; --muted: #52617a; --line: #e0e6f0; --track: #edf0f6;
+  --passed: #149975; --failed: #d64961; --blocked: #c78322;
+  --skipped: #6184bc; --planned: #a1adc3; --unknown: #884abd;
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink); background: #f3f5fa;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; line-height: 1.55; }
+h1, h2, p, dl, dd, figure { margin: 0; }
+a { color: inherit; text-decoration: none; }
+:focus-visible { outline: 2px solid #6671e6; outline-offset: 3px; }
+[hidden] { display: none !important; }
+.shell { width: min(1200px, calc(100% - 64px)); margin: auto; }
+.masthead { background: #fff; border-bottom: 1px solid var(--line); }
+.masthead .shell { display: flex; align-items: center; justify-content: space-between; min-height: 64px; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 10px; font: 750 19px/1 system-ui, sans-serif; }
+.brand-mark { display: grid; place-items: center; width: 29px; height: 29px; border-radius: 9px; background: #5554bc; color: white; font-size: 16px; }
+nav { display: flex; gap: 24px; font-size: 13px; font-weight: 600; color: var(--muted); }
+nav a:hover { color: #4c42ad; }
+main { padding-block: 30px 48px; }
+.hero {
+  color: #fff; background:
+    radial-gradient(ellipse at 94% 4%, #434284 0%, transparent 62%),
+    linear-gradient(115deg, #151c38, #222856);
+  border-radius: 22px; overflow: hidden; box-shadow: 0 15px 32px #20284d1f;
+}
+.hero-inner { display: grid; grid-template-columns: 1.05fr 1fr; gap: 28px; align-items: center; padding: 30px 34px; }
+.project { color: #d4d8f4; font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
+h1 { margin: 4px 0 17px; font-size: clamp(30px, 4vw, 44px); letter-spacing: -.055em; line-height: 1.16; }
+.gate { display: inline-flex; gap: 8px; align-items: center; padding: 6px 12px; border-radius: 8px; font-size: 14px; font-weight: 700; color: #e0e5fa; background: #ffffff20; }
+.gate.passed { color: #a5f2d6; background: #59dfaa20; }
+.gate.failed { color: #ffc0ca; background: #ff789528; }
+.gate::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.run-meta { min-width: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, .85fr) minmax(0, 1fr); gap: 12px 16px; padding: 15px 18px; border: 1px solid #ffffff26; border-radius: 14px; background: #ffffff0b; }
+.run-meta dt { font-size: 11px; color: #c8ceed; }
+.run-meta dd { font-size: 13px; font-weight: 650; margin-top: 3px; color: #f4f5ff; overflow-wrap: anywhere; }
+.environment { grid-column: 1 / -1; padding-top: 9px; border-top: 1px solid #ffffff21; }
+.identifier, .environment dd { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; }
+.reasons { padding: 14px 34px; background: #ffffff11; color: #ffe5ea; border-top: 1px solid #ffffff25; font-size: 13px; overflow-wrap: anywhere; }
+.reasons ul { margin: 0; padding-inline-start: 18px; }
+.reasons li + li { margin-top: 4px; }
+.reasons summary { padding: 6px 0 0; font-size: inherit; }
+.reasons summary::marker { color: currentColor; }
+.overview { display: grid; grid-template-columns: 1.12fr 1fr; gap: 18px; margin-top: 20px; }
+.panel { min-width: 0; background: #fff; border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 5px 15px #23305308; }
+.overview .panel { padding: 21px 23px; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 5px 14px; }
+h2, summary { font-size: 18px; font-weight: 750; letter-spacing: -.025em; }
+.caption, .row-note { color: var(--muted); font-size: 12px; }
+.outcome { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: center; gap: 25px; margin: 16px 0; }
+.ring { display: grid; place-items: center; width: 146px; aspect-ratio: 1; border-radius: 50%; }
+.ring-label { display: grid; place-content: center; text-align: center; width: 114px; aspect-ratio: 1; border-radius: 50%; background: #fff; }
+.ring-label strong { font: 740 min(39px, 8vw)/1 system-ui, sans-serif; letter-spacing: -.055em; }
+.ring-label small { font-size: 11px; color: var(--muted); margin-top: 5px; }
+.legend { display: grid; gap: 3px; padding: 0; margin: 0; list-style: none; }
+.legend li { display: grid; grid-template-columns: 9px 1fr auto; align-items: center; gap: 8px; font-size: 13px; }
+.legend strong { font-size: 14px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-color, var(--planned)); }
+.passed { --status-color: var(--passed); }
+.failed { --status-color: var(--failed); }
+.blocked { --status-color: var(--blocked); }
+.skipped { --status-color: var(--skipped); }
+.planned { --status-color: var(--planned); }
+.unknown { --status-color: var(--unknown); }
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding-top: 13px; border-top: 1px solid var(--line); }
+.metrics > div { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 8px; padding: 8px 11px; background: #f4f5fc; border-radius: 8px; font-size: 12px; color: var(--muted); }
+.metrics strong { font-size: 16px; color: #343188; }
+.coverage { display: grid; gap: 18px; margin-top: 24px; }
+.coverage-row > div:first-child { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 7px; }
+.coverage-row strong { color: #4339a1; }
+.track { height: 9px; border-radius: 20px; overflow: hidden; background: var(--track); }
+.track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #7661d0, #636fd5); }
+.coverage-note { margin-top: 15px; }
+.details-grid { display: grid; grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr); gap: 18px; margin-top: 18px; align-items: start; }
+.details-grid .section-head { padding: 17px 19px 13px; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 19px 14px; }
+input, select { font: inherit; font-size: 13px; color: var(--ink); border: 1px solid #cfd8eb; border-radius: 8px; padding: 7px 9px; background: #fff; min-width: 0; }
+input { flex: 1 1 160px; }
+select { flex: 0 1 auto; }
+.table-scroll { overflow-x: auto; border-radius: 0 0 16px 16px; }
+.table-scroll:focus-visible { outline-offset: -2px; }
+table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 13px; }
+th, td { text-align: left; padding: 10px 12px; overflow-wrap: anywhere; }
+th:first-child, td:first-child { padding-left: 19px; width: 22%; }
+th:last-child, td:last-child { width: 20%; }
+th:nth-child(3) { width: 19%; }
+th { background: #f7f8fc; border-block: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 650; }
+td { vertical-align: top; border-bottom: 1px solid #edf0f6; }
+tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: #fafbff; }
+.row-note { display: block; white-space: pre-line; }
+.identifier { font-size: 12px; color: #475577; }
+.empty { padding: 25px 19px; color: var(--muted); text-align: center; }
+.badge { display: inline-block; border-radius: 6px; padding: 2px 7px; color: #445473; background: #edf0f6; white-space: nowrap; font-size: 11px; font-weight: 750; }
+.badge.passed { color: #087354; background: #e1f6ed; }
+.badge.failed { color: #a92742; background: #fce8ed; }
+.badge.blocked { color: #8a4e09; background: #fff1d8; }
+.badge.skipped { color: #335b91; background: #e8f0ff; }
+.badge.unknown { color: #7034a1; background: #f4e9ff; }
+#defects table { min-width: 340px; }
+.defect-meta { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 19px 14px; }
+.defect-meta span { padding: 4px 8px; background: #f3f5fa; border-radius: 7px; color: var(--muted); font-size: 12px; }
+.defect-meta strong { color: var(--ink); }
+.report { margin-top: 18px; }
+summary { padding: 15px 19px; cursor: pointer; }
+summary::marker { color: #5554bc; }
+pre { margin: 0; padding: 16px 19px; border-top: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 "Cascadia Mono", Consolas, monospace; }
+@media (max-width: 920px) {
+  .details-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .shell { width: calc(100% - 32px); }
+  .masthead .shell { min-height: 52px; }
+  nav { gap: 12px; font-size: 12px; }
+  nav a:first-child { display: none; }
+  main { padding-block: 16px 28px; }
+  .hero-inner, .overview { grid-template-columns: minmax(0, 1fr); }
+  .hero-inner { padding: 21px; gap: 16px; }
+  .reasons { padding-inline: 21px; }
+  .overview, .details-grid { gap: 12px; margin-top: 12px; }
+  .overview .panel { padding: 16px; }
+  .outcome { grid-template-columns: 130px minmax(0, 1fr); gap: 15px; }
+  .ring { width: 124px; }
+  .ring-label { width: 96px; }
+  #defects table { min-width: 0; }
+  th, td { padding: 9px 7px; }
+  th:first-child, td:first-child { padding-left: 11px; }
+  th:nth-child(3) { width: 19%; }
+  th:last-child, td:last-child { width: 22%; }
+}
+</style>
+</head>
+<body>
+<header class="masthead">
+  <div class="shell">
+    <a href="#overview" class="brand"><span class="brand-mark" aria-hidden="true">✓</span>dyd-test</a>
+    <nav aria-label="报告导航">
+      <a href="#overview">运行总览</a><a href="#cases">用例</a><a href="#defects">缺陷</a><a href="#report">报告原文</a>
+    </nav>
+  </div>
+</header>
+<main class="shell" id="overview">
+  <header class="hero">
+    <div class="hero-inner">
+      <div>
+        <p class="project">${project}</p>
+        <h1>测试结果总览</h1>
+        <p class="gate ${tone}">${verdict}</p>
+      </div>
+      <dl class="run-meta">
+        <div><dt>运行编号</dt><dd class="identifier">${run_id}</dd></div>
+        <div><dt>版本</dt><dd>${version}</dd></div>
+        <div><dt>测试模式</dt><dd>${mode}</dd></div>
+        <div class="environment"><dt>测试环境</dt><dd>${environment}</dd></div>
+      </dl>
+    </div>
+    ${reasons}
+  </header>
+  <div class="overview">
+    <section class="panel" aria-labelledby="outcome-title">
+      <div class="section-head"><h2 id="outcome-title">用例执行</h2><p class="caption">按用例最终状态统计</p></div>
+      <figure class="outcome" aria-label="用例状态分布">
+        <div class="ring" style="background:${chart}"><div class="ring-label"><strong>${total}</strong><small>登记用例</small></div></div>
+        <ul class="legend">${legend}</ul>
+      </figure>
+      <div class="metrics">
+        <div><span title="已执行（通过 + 失败）÷ 计划用例">用例执行率</span><strong>${execution_rate}</strong></div>
+        <div><span title="通过 ÷ 已执行（通过 + 失败）">执行通过率</span><strong>${pass_rate}</strong></div>
+      </div>
+    </section>
+    <section class="panel" aria-labelledby="coverage-title">
+      <div class="section-head"><h2 id="coverage-title">需求覆盖</h2><p class="caption">需求总数 <strong>${requirements}</strong></p></div>
+      <div class="coverage">${coverage}</div>
+      <p class="caption coverage-note">各项比例以需求总数为分母。</p>
+    </section>
+  </div>
+  <div class="details-grid">
+    <section class="panel" id="cases" aria-labelledby="case-title">
+      <div class="section-head"><h2 id="case-title">用例明细</h2><p class="caption" id="case-count" aria-live="polite">共 ${total} 条</p></div>
+      <div class="filters" id="case-filters" hidden>
+        <input id="case-search" type="search" aria-label="搜索用例" placeholder="搜索用例、需求或缺陷编号">
+        <select id="case-status" aria-label="按状态筛选"><option value="">全部状态</option>${options}</select>
+      </div>
+      <div class="table-scroll" role="region" aria-label="用例明细表" tabindex="0">
+        <table>
+          <thead><tr><th scope="col">用例编号</th><th scope="col">用例 / 执行备注</th><th scope="col">需求</th><th scope="col">状态</th></tr></thead>
+          <tbody id="case-rows">${case_table}<tr id="case-empty" hidden><td colspan="4" class="empty">没有符合条件的用例</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel" id="defects" aria-labelledby="defect-title">
+      <div class="section-head"><h2 id="defect-title">缺陷跟踪</h2><p class="caption">共 ${defect_count} 条记录</p></div>
+      <div class="defect-meta"><span>未关闭 <strong>${open_defects}</strong></span><span>未关闭 P0 / P1 <strong>${critical}</strong></span></div>
+      <div class="table-scroll" role="region" aria-label="缺陷明细表" tabindex="0">
+        <table>
+          <thead><tr><th scope="col">缺陷编号</th><th scope="col">标题 / 用例</th><th scope="col">级别</th><th scope="col">状态</th></tr></thead>
+          <tbody>${defect_table}</tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+  <details class="panel report" id="report"><summary>报告原文</summary><pre>${report}</pre></details>
+</main>
+<script>
+const rows = [...document.querySelectorAll('#case-rows [data-state]')];
+const search = document.getElementById('case-search');
+const status = document.getElementById('case-status');
+const count = document.getElementById('case-count');
+const noMatches = document.getElementById('case-empty');
+
+function filterCases() {
+  const query = search.value.trim().toLocaleLowerCase();
+  let visible = 0;
+  for (const row of rows) {
+    const matchesStatus = !status.value || row.dataset.state === status.value;
+    row.hidden = !matchesStatus || !row.textContent.toLocaleLowerCase().includes(query);
+    if (!row.hidden) visible += 1;
+  }
+  count.textContent = '显示 ' + visible + ' / ' + rows.length + ' 条';
+  noMatches.hidden = visible !== 0;
+}
+
+if (rows.length) {
+  document.getElementById('case-filters').hidden = false;
+  search.addEventListener('input', filterCases);
+  status.addEventListener('change', filterCases);
+}
+document.querySelector('nav a[href="#report"]').addEventListener('click', () => {
+  document.getElementById('report').open = true;
+});
+</script>
+</body>
+</html>
