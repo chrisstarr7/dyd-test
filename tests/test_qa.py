@@ -70,10 +70,12 @@ def acceptance_run(root, strict=False):
     run_qa("init", "--project", "p", "--run-id", "r1", "--dir", str(root),
            "--url", URL, "--version", "v1")
     run = root / "p" / "r1"
+    config = qa.load_json(run / "run.json")
     if not strict:
-        legacy = qa.load_json(run / "run.json")
-        legacy.pop("qa_contract")
-        qa.dump_json(run / "run.json", legacy)
+        config.pop("qa_contract")
+    config.pop("assurance_contract")
+    config.pop("evidence_contract")
+    qa.dump_json(run / "run.json", config)
     (run / "page.txt").write_text("物料列表 | 新增物料 | 管理员", encoding="utf-8")
     qa.dump_json(run / "requirements.json", [{
         "id": "REQ-001", "source": "PRD §2",

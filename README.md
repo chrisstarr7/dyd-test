@@ -56,6 +56,8 @@ npx -y skills add chrisstarr7/dyd-test -g -a codex
 
 ## 确定性脚本与门禁
 
+新运行默认核对 PRD 条款、业务路径、前置证据与数据回收。完整测试要求必测条款和高风险场景有实际证据，资料不全或范围内验证缺失时显示「测试未完成」。详见 [验收契约](references/acceptance-contract.md) 和 [测试数据流程](references/test-data-workflow.md)。
+
 ```sh
 python scripts/qa.py init --project <p> --url <u> --version <v> --mode full
 python scripts/qa.py parse-cases --file <用例.csv> --out <run>/test-cases.json

@@ -21,7 +21,7 @@ SESSION = re.compile(r"[\w-]{1,100}\Z")
 READS = {"count", "text", "value", "visible", "texts", "focused", "label"}
 NAVIGATION_METRICS = {"domContentLoadedEventEnd", "loadEventEnd"}
 LAYERS = {"online_ui", "offline_ui"}
-PHASES = {"page", "assert", "before", "after", "cleanup"}
+PHASES = {"page", "assert", "before", "action", "after", "cleanup"}
 
 # 固定脚本只读取当前页面。页面配置可以指定选择器和读取类型。
 PROBE = r"""
@@ -38,6 +38,10 @@ PROBE = r"""
     }
     const matches = scope ? Array.from(scope.querySelectorAll(probe.selector)) : nodes(probe.selector);
     const shown = matches.filter(visible);
+    if (probe.read === 'action_receipt') {
+      if (shown.length > 1) throw Error('操作响应不唯一');
+      return shown.length === 1 && clean(shown[0]) === probe.text;
+    }
     if (probe.read === 'count') return shown.length;
     if (probe.read === 'visible') {
       if (shown.length > 1) throw Error('标识对应多个可见控件');
@@ -72,7 +76,22 @@ PROBE = r"""
       || (page.busy && nodes(page.busy).some(visible))
       || (resultReady && nodes(resultReady).filter(visible).length !== 1))
     throw Error('页面身份、主要控件或数据尚未就绪');
-  const hits = fixture ? nodes(fixture.selector).filter(visible) : [];
+  if (fixture?.ready && nodes(fixture.ready).filter(visible).length !== 1)
+    throw Error('夹具查询或独立回查尚未完成');
+  if (fixture?.applied && read(null, fixture.applied) !== fixture.applied.value)
+    throw Error('夹具查询条件与当前测试对象不一致');
+  const rows = fixture ? nodes(fixture.selector).filter(visible) : [];
+  if (fixture?.total) {
+    const total = read(null, fixture.total);
+    if (!/^\d+$/.test(total) || Number(total) !== rows.length)
+      throw Error('当前页面未展示夹具查询的全部结果');
+  }
+  const hits = rows.filter(row => {
+    if (!fixture.key) return true;
+    const keys = Array.from(row.querySelectorAll(fixture.key.selector)).filter(visible);
+    if (keys.length !== 1) throw Error('结果行缺少唯一对象标识');
+    return clean(keys[0]) === fixture.key.value;
+  });
   if (hits.length > 1) throw Error('测试夹具目标不唯一');
   const fields = hits.length ? Object.fromEntries(Object.entries(fixture.fields || {})
       .map(([key, probe]) => [key, read(hits[0], probe)])) : {};
@@ -80,7 +99,10 @@ PROBE = r"""
       .map(([key, selector]) => [key, nodes(selector).filter(visible).length])) : {};
   return {url:location.href, role, tenant, principal, online:navigator.onLine, anchors, ready,
     document_start:performance.timeOrigin,
-    observed:Object.fromEntries(Object.entries(checks).map(([key, probe]) => [key, read(null, probe)])),
+    observed:Object.fromEntries(Object.entries(checks).map(([key, probe]) => {
+      if (probe.scope === 'fixture' && !hits.length) return [key, null];
+      return [key, read(probe.scope === 'fixture' ? hits[0] : null, probe)];
+    })),
     count:fixture ? hits.length : null, fields, related};
 }
 """
@@ -106,7 +128,8 @@ def browser_probe(value):
     if value.get("read") == "navigation_ms":
         return (value.get("metric") in NAVIGATION_METRICS and type(value.get("max_ms")) is int
                 and 0 < value["max_ms"] <= 300_000)
-    return text(value.get("selector")) and value.get("read") in READS
+    return (text(value.get("selector")) and value.get("read") in READS
+            and value.get("scope", "page") in {"page", "fixture"})
 
 
 def redacted_measurement(value):
@@ -150,6 +173,31 @@ def browser_fixture(fixture):
     return probe
 
 
+def exact_fixture(fixture):
+    """对象匹配和空结果就绪必须独立于列表条数。"""
+    probe = browser_fixture(fixture)
+    key = probe.get("key")
+    applied = probe.get("applied")
+    lookup = probe.get("lookup")
+    total = probe.get("total")
+    if (not isinstance(key, dict) or not text(key.get("selector")) or not text(key.get("value"))
+            or not text(probe.get("ready")) or probe["ready"] == probe["selector"]
+            or lookup not in ("complete", "filtered")
+            or (lookup == "filtered" and (not browser_probe(applied) or applied["read"] != "text"
+                                          or applied.get("value") != key["value"] or total is None))
+            or (total is not None and (not browser_probe(total) or total["read"] != "text"))
+            or (lookup == "complete" and applied is not None)):
+        raise ValueError("夹具须登记精确业务标识和独立的查询完成标识")
+    if "principal_value" in fixture and not text(fixture["principal_value"]):
+        raise ValueError("夹具登录主体标识无效")
+    return probe
+
+
+def principal_fingerprint(run, principal):
+    """同一运行内跨文档比对主体，原始值留在浏览器侧采集过程。"""
+    return digest([run["run_id"], principal])
+
+
 def read_capture(directory, path):
     file = evidence_file(directory, path)
     try:
@@ -174,7 +222,7 @@ def write_capture(directory, path, data):
 
 
 def verify_identity(directory, run, page, case, fixture, path, measured):
-    write_phase = measured.get("phase") in {"before", "after", "cleanup"}
+    write_phase = measured.get("phase") in {"before", "action", "after", "cleanup"}
     write_ok = (fixture and write_phase
                 and (case is None or case.get("operation") in {"create", "update", "delete"}))
     read_ok = (not fixture and case is not None and measured.get("phase") == "assert"
@@ -231,17 +279,23 @@ def validate_capture(directory, run, page, path, *, phases, case=None, fixture=N
                     or data["related"].keys() != browser_fixture(fixture).get("related", {}).keys()
                     or any(type(n) is not int or n < 0 for n in data["related"].values())):
         raise ValueError("夹具采集结果缺失、重复或租户不匹配")
+    if run.get("assurance_contract") == 1 and (fixture or (case or {}).get("actor") == "fixture"):
+        if not re.fullmatch(r"[a-f0-9]{64}", data.get("subject_digest") or ""):
+            raise ValueError("采集缺少可跨文档核对的当前主体")
+        if fixture:
+            exact_fixture(fixture)
     measured = {key: data.get(key) for key in ("observed", "fields", "role", "tenant", "url", "related")}
     if redact_data(measured) != measured:
         raise ValueError("采集记录含有未脱敏值")
     if "identity_proof" in data:
-        if data["phase"] not in {"assert", "before", "after", "cleanup"}:
+        if data["phase"] not in {"assert", "before", "action", "after", "cleanup"}:
             raise ValueError("只有读断言或写入回查可引用会话身份凭据")
         verify_identity(directory, run, page, case, fixture, data["identity_proof"], data)
     return file, data
 
 
-def result_from_capture(directory, run, case, page, criteria, path, fixture=None, before_path=None):
+def result_from_capture(directory, run, case, page, criteria, path, fixture=None, before_path=None,
+                        actor_fixture=None):
     if not page:
         raise ValueError("用例的目标页面尚未登记")
     file, observed = validate_capture(directory, run, page, path, case=case, fixture=fixture,
@@ -279,6 +333,17 @@ def result_from_capture(directory, run, case, page, criteria, path, fixture=None
     if fingerprints.get("baseline"):
         observation["baseline_evidence"] = before_path
     passed = all(digest(expected[key]) == digest(actual[key]) for key in expected)
+    if run.get("assurance_contract") == 1:
+        observation["sampled_at"] = observed["time"]
+        observation["session"] = observed["session"]
+        if case.get("actor") == "fixture":
+            if not actor_fixture or actor_fixture.get("tenant") != observed["tenant"]:
+                raise ValueError("登录主体所对应的测试夹具未登记或租户不一致")
+            key = exact_fixture(actor_fixture)["key"]["value"]
+            subject = actor_fixture.get("principal_value", key)
+            observation["actor_verified"] = observed.get("subject_digest") == principal_fingerprint(run, subject)
+            fingerprints["actor_fixture"] = digest(actor_fixture)
+            passed = passed and observation["actor_verified"]
     return "passed" if passed else "failed", fingerprints, observation
 
 
@@ -330,11 +395,13 @@ def capture(directory, session, phase, output, *, page_id=None, case_id=None, fi
     if (case_id and not case) or (fixture_id and fixture_id not in fixtures):
         raise ValueError("目标用例或夹具未登记")
     # 只读用例可以关联备数，断言仍按用例页面独立采集。
-    mutation_fixture = (case or {}).get("fixture") if phase in {"before", "after"} else None
+    receipt = (case or {}).get("effect", {}).get("receipt") if run.get("evidence_contract") == 1 else None
+    mutation_fixture = (case or {}).get("fixture") if phase in {"before", "action", "after"} else None
     fixture = fixtures.get(fixture_id or mutation_fixture)
     if (phase == "page" and (case or fixture or not page_id)
             or phase == "assert" and (not case or case.get("operation") != "read" or fixture)
-            or phase in {"before", "after"} and (not fixture or (case and case.get("fixture") != fixture["id"]))
+            or phase in {"before", "action", "after"} and (not fixture or (case and case.get("fixture") != fixture["id"]))
+            or phase == "action" and not receipt
             or phase == "cleanup" and (not fixture or case)):
         raise ValueError("用例、夹具和采集阶段不匹配")
     page_ref = (case or {}).get("page") or (fixture or {}).get("page") or page_id
@@ -356,21 +423,30 @@ def capture(directory, session, phase, output, *, page_id=None, case_id=None, fi
     ready = (case or {}).get("result_ready") if phase in {"assert", "after"} else None
     proof_allowed = ((case is None or case.get("scenario") != "role") and online
                      and page["identity"].get("principal")
-                     and ((fixture and phase in {"before", "after", "cleanup"}
+                     and ((fixture and phase in {"before", "action", "after", "cleanup"}
                            and (case is None or case.get("operation") in {"create", "update", "delete"}))
                           or (not fixture and case is not None and phase == "assert"
                               and case.get("operation") == "read")))
     if identity_proof and not proof_allowed:
         raise ValueError("会话身份凭据仅可用于有登录主体标识的在线读断言或写入回查")
-    measured = collect(session, page, checks, browser_fixture(fixture) if fixture else None,
+    fixture_probe = None
+    if fixture:
+        fixture_probe = exact_fixture(fixture) if run.get("assurance_contract") == 1 else browser_fixture(fixture)
+    if receipt and phase in {"before", "action"}:
+        checks[""] = {**receipt, "read": "action_receipt"}
+    measured = collect(session, page, checks, fixture_probe,
                        timeout, online, ready, allow_missing_role=bool(identity_proof))
     # 字段和身份从当前浏览器采集；含敏感值的路由不落盘。
     if redact_data(measured["url"]) != measured["url"] or re.search(r"(?:[?&]|%26)(?:token|password|code)=", measured["url"], re.I):
         raise ValueError("采集路由可能包含凭据，需使用无凭据的测试入口")
     principal = measured.pop("principal", None)
+    if receipt and phase in {"before", "action"}:
+        measured["action_received"] = measured["observed"].pop("", None)
     measured = redact_data(measured)
     if text(principal):
         measured["principal_digest"] = digest([run["run_id"], session, measured.get("document_start"), principal])
+        if run.get("assurance_contract") == 1:
+            measured["subject_digest"] = principal_fingerprint(run, principal)
     measured.update(schema=1, source="agent-browser", run_id=run["run_id"], version=run["version"],
                     session=session, time=datetime.now(timezone.utc).isoformat(), phase=phase, page=page["id"],
                     case=case_id, fixture=(fixture or {}).get("id"), plan=digest([page, case, fixture]))

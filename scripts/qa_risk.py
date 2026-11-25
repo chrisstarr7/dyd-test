@@ -159,6 +159,10 @@ def _review_risk(risk, dimensions, layers, source, index, results, read, run, re
         raise ValueError("；".join(errors))
     if severity == "high" and not scenarios:
         reasons.append(f"高风险 {risk_id} 缺少必测场景")
+    if (severity == "high" and run.get("assurance_contract") == 1 and run.get("mode") == "full"
+            and (len(scenarios) < 2 or not any(item.get("scenario") in ("boundary", "negative", "role")
+                                               for item in scenarios.values()))):
+        reasons.append(f"高风险 {risk_id} 须安排至少两个场景并包含边界、异常或角色验证")
 
     reviewed, statuses, seen = {}, [], set()
     for scenario_id, entry in scenarios.items():

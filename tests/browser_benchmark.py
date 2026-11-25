@@ -67,7 +67,8 @@ def write_plan(directory, url, tenant, marker, fixture_row):
     write_json(directory / "pages.json", [{
         "id": PAGE, "status": "confirmed", "entry": "管理员通过首页登录后进入物料管理页",
         "url": url, "role": ROLE, "tenant": tenant,
-        "identity": {"role": {"selector": "#me"}, "tenant": {"selector": "h1"}},
+        "identity": {"role": {"selector": "#me"}, "tenant": {"selector": "h1"},
+                     "principal": {"selector": "#principal"}},
         "anchors": ["#table", "#name"], "ready": FIRST_ROW, "busy": "#login",
     }])
 
@@ -112,7 +113,10 @@ def write_plan(directory, url, tenant, marker, fixture_row):
         "fixtures": [{"id": FIXTURE, "tenant": tenant, "marker": marker, "reference": marker,
                       "ownership": "verified", "source": "generated", "cleanup": "delete",
                       "actions": ["create", "delete"], "evidence": "local-fixture.txt", "page": PAGE,
-                      "probe": {"selector": fixture_row, "fields": {"name": probe("td:nth-child(2)", "text")}}}],
+                      "probe": {"selector": ROWS, "ready": FIRST_ROW, "lookup": "complete",
+                                "key": {"selector": "td:nth-child(2)", "value": marker},
+                                "fields": {"name": probe("td:nth-child(2)", "text")}},
+                      "cleanup_scope": "In-memory items have no separate related objects", "cleanup_counts": {}}],
     })
     return cases
 
@@ -246,6 +250,8 @@ def run_workflow(output, browser, env, url, tenant, admin_password, *, label, pr
                 require(deleted["fields"]["name"] == marker and deleted["observed"] == {
                     "AC-004": BASE_COUNT + 1, "AC-005": 1,
                 }, f"{run_id}: delete did not produce the injected persistence mismatch")
+                agent("reload")
+                sign_in()
                 capture("retained.json", "cleanup", "--fixture", FIXTURE)
                 qa("close-data", "--tenant", tenant, "--fixture", FIXTURE, "--evidence", "retained.json",
                    code=1, contains="夹具仍存在")
@@ -254,6 +260,8 @@ def run_workflow(output, browser, env, url, tenant, admin_password, *, label, pr
                 agent("wait", "--state", "hidden", fixture_row)
                 agent("reload")
                 sign_in()
+        agent("reload")
+        sign_in()
         capture("cleanup.json", "cleanup", "--fixture", FIXTURE)
         fixture_action("close-data", "cleanup.json", "--fixture", FIXTURE)
 

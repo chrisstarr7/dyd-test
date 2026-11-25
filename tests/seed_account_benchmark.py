@@ -1,9 +1,10 @@
-"""Verify seeded account creation, separate-session login and cleanup in a real browser.
+"""Verify full PRD coverage for an isolated account lifecycle in a real browser.
 
 Usage: python -B tests/seed_account_benchmark.py [--output-dir PATH]
 """
 
 import argparse
+import hashlib
 import json
 import os
 import secrets
@@ -22,10 +23,11 @@ from browser_benchmark import HOST, ROOT, probe, read_json, require, write_json
 
 
 PROJECT, TENANT, VERSION = "seed-account-benchmark", "local-account-demo", "mock-account-v1"
-ADMIN, MEMBER = "PAGE-001", "PAGE-002"
-CREATE, LOGIN, DELETE = "TC-001", "TC-002", "TC-003"
+ADMIN, MEMBER, GUEST = "PAGE-001", "PAGE-002", "PAGE-003"
+CREATE, UPDATE, LOGIN, DELETE, DENIED = "TC-001", "TC-002", "TC-003", "TC-004", "TC-005"
 FIXTURE, RECIPE, RECEIPT = "FIX-001", "account", "seed-receipt.json"
 MAIL_DOMAIN = "accounts.invalid"
+EDITED = "Updated public label"
 LOGIN_FIELDS = {"alias": "#login-alias", "password": "#login-password"}
 CREATE_FIELDS = {"marker": "#marker", "alias": "#alias", "password": "#password"}
 ADMIN_FORM = """
@@ -74,10 +76,16 @@ class AccountMock(BaseHTTPRequestHandler):
             row = ""
             if account:
                 marker = escape(account[0], quote=True)
+                label = escape(self.server.display_name)
                 row = (f'<tr data-marker="{marker}"><td class="marker">{marker}</td><td>'
+                       f'<span class="display">{label}</span><form id="update" method="post" action="/update">'
+                       f'<input name="display_name" aria-label="Display name" value="{escape(label, quote=True)}">'
+                       f'<button name="marker" value="{marker}">Save label</button></form>'
                        '<form method="post" action="/delete">'
                        f'<button name="marker" value="{marker}">Delete account</button></form></td></tr>')
-            self.page("Admin", f'{ADMIN_FORM}<table id="accounts"><caption>Test accounts</caption>'
+            member_session = '<p id="member-session">Test member session exists</p>' if self.server.member_session else ''
+            self.page("Admin", f'<p id="admin-principal">benchmark-admin</p>{member_session}'
+                      f'{ADMIN_FORM}<table id="accounts"><caption>Test accounts</caption>'
                       f'<tbody>{row}</tbody></table>')
         elif self.path == "/login":
             self.page("Guest", LOGIN_FORM)
@@ -108,6 +116,10 @@ class AccountMock(BaseHTTPRequestHandler):
         marker, alias, password = (form.get(key, "") for key in CREATE_FIELDS)
         if self.path == "/create" and not account and marker and alias.endswith(f"@{MAIL_DOMAIN}") and password:
             self.server.account = (marker, alias, password)
+            self.server.display_name = "Original public label"
+            self.redirect("/")
+        elif self.path == "/update" and account and marker == account[0] and form.get("display_name"):
+            self.server.display_name = form["display_name"]
             self.redirect("/")
         elif self.path == "/login" and account and (alias, password) == account[1:]:
             self.server.member_session = secrets.token_urlsafe(24)
@@ -127,43 +139,103 @@ def write_plan(directory, origin, receipt):
     row = f'tr[data-marker="{marker}"]'
     specs = [
         (CREATE, ADMIN, "create", "The seeded account appears in the admin list after saving.", row, "count", 1),
+        (UPDATE, ADMIN, "update", "The account displays the edited public label on a new page load.",
+         ".display", "text", EDITED),
         (LOGIN, MEMBER, "read", "The seeded account signs in and displays its public label.",
          "#member-marker", "text", marker),
         (DELETE, ADMIN, "delete", "The account disappears from the admin list after deletion.", row, "count", 0),
+        (DENIED, GUEST, "read", "The deleted account cannot continue using its earlier member session.",
+         "#login", "visible", True),
     ]
     (directory / "prd.md").write_text("\n".join(item[3] for item in specs) + "\n", encoding="utf-8")
-    write_json(directory / "prd-scope.json", {"document": "prd.md", "revision": VERSION, "sections": [
-        {"from": 1, "to": 3, "status": "in_scope", "requirements": ["REQ-001"]},
+    source = f"prd.md:1-{len(specs)}"
+    write_json(directory / "prd-scope.json", {"document": "prd.md", "revision": VERSION, "source_complete": True,
+        "flows": [{"id": "FLOW-001", "source": source, "cases": [spec[0] for spec in specs]}], "sections": [
+        {"from": 1, "to": len(specs), "status": "in_scope", "requirements": ["REQ-001"]},
     ]})
     write_json(directory / "pages.json", [
         {"id": page, "status": "confirmed", "entry": f"Open the {role} workspace", "url": origin + route,
          "role": role, "tenant": TENANT, "ready": "#workspace", "anchors": anchors,
-         "identity": {"role": {"selector": "#role"}, "tenant": {"selector": "#tenant"}}}
-        for page, role, route, anchors in ((ADMIN, "Admin", "", ["#create", "#accounts"]),
-                                           (MEMBER, "Member", "member", ["#signed-in", "#member-marker"]))
+         "identity": {"role": {"selector": "#role"}, "tenant": {"selector": "#tenant"},
+                      **({"principal": {"selector": subject}} if subject else {})}}
+        for page, role, route, anchors, subject in (
+            (ADMIN, "Admin", "", ["#create", "#accounts"], "#admin-principal"),
+            (MEMBER, "Member", "member", ["#signed-in", "#member-marker"], "#member-marker"),
+            (GUEST, "Guest", "login", ["#login-alias", "#login-password"], None),
+        )
     ])
     criteria, cases = [], []
     for index, (case_id, page, action, rule, selector, read, value) in enumerate(specs, 1):
         ac = f"AC-{index:03}"
-        criteria.append({"id": ac, "page": page, "rule": rule, "risk": "medium", "scenarios": ["normal"]})
-        case = {"id": case_id, "req": "REQ-001", "page": page, "operation": action, "scenario": "normal",
-                "steps": [rule], "expected": {ac: value}, "checks": {ac: probe(selector, read)}}
+        scenario = "negative" if case_id == DENIED else "normal"
+        criteria.append({"id": ac, "page": page, "rule": rule, "risk": "medium", "scenarios": [scenario],
+                         "source_line": index, "source_part": 1, "source_quote": rule})
+        check = probe(selector, read)
+        if action == "update":
+            check["scope"] = "fixture"
+        case = {"id": case_id, "req": "REQ-001", "page": page, "operation": action, "scenario": scenario,
+                "steps": [rule], "fixture": FIXTURE, "expected": {ac: value}, "checks": {ac: check}}
+        if cases:
+            case["depends_on"] = [cases[-1]["id"]]
         if action != "read":
             case.update(fixture=FIXTURE, verify_reload=True)
+        if action == "update":
+            case["effect"] = {"mode": "change", "field": "display", "to": EDITED}
+        if case_id == LOGIN:
+            case["actor"] = "fixture"
         if case_id == CREATE:
             case.update(seed_form={"root": "#create", "fields": CREATE_FIELDS},
                         seed_login={"root": "#login", "url": origin + "login", "ready": "#login",
                                     "anchors": list(LOGIN_FIELDS.values()), "fields": LOGIN_FIELDS})
         cases.append(case)
-    write_json(directory / "requirements.json", [{"id": "REQ-001", "source": "prd.md:1-3", "criteria": criteria}])
+    write_json(directory / "requirements.json", [{"id": "REQ-001", "source": source, "criteria": criteria}])
+    write_json(directory / "prd-review.json", {
+        "revision": VERSION, "source_sha256": hashlib.sha256((directory / "prd.md").read_bytes()).hexdigest(),
+        "reviewer": "Local benchmark specification", "reference": "Isolated account mock requirements",
+        "obligations": [{"id": f"OB-{index:03}", "source_line": index, "source_part": 1, "excerpt": item[3],
+                         "rule": item[3], "criteria": [f"AC-{index:03}"]} for index, item in enumerate(specs, 1)],
+    })
     write_json(directory / "test-cases.json", {"cases": cases})
     write_json(directory / RECEIPT, receipt)
     write_json(directory / "fixtures.json", {
         "boundary": dict(receipt["boundary"], evidence=RECEIPT),
         "fixtures": [dict(receipt["fixture"], page=ADMIN, evidence=RECEIPT, ownership="verified",
-                          probe={"selector": row, "fields": {"label": probe(".marker", "text")}})],
+                          probe={"selector": "#accounts tbody > tr", "ready": "#accounts", "lookup": "complete",
+                                 "key": {"selector": ".marker", "value": marker},
+                                 "fields": {"label": probe(".marker", "text"), "display": probe(".display", "text")},
+                                 "related": {"session": "#member-session"}},
+                          cleanup_scope="Account and its only member session", cleanup_counts={"session": 0})],
     })
+    write_risk_plan(directory, specs)
     return row
+
+
+def write_risk_plan(directory, specs):
+    """给本地完整验收配套已知风险和不适用依据。"""
+    run = read_json(directory / "run.json")
+    identity = {"run_id": run["run_id"], "version": VERSION}
+    dimensions = {key: {"status": "in_scope"} for key in ("functionality", "data", "permission", "regression")}
+    for key, reason in {
+        "integration": "The mock does not call other systems",
+        "reliability": "No asynchronous or retry requirements in the mock PRD",
+        "performance": "No timing budget or load target in the mock PRD",
+        "accessibility": "No accessibility claims in this isolated benchmark",
+    }.items():
+        decision = f"decision-{key}.json"
+        write_json(directory / decision, {**identity, "type": "risk_decision", "subject": f"dimension:{key}",
+                   "decision": "not_applicable", "by": "Local benchmark specification", "reason": reason,
+                   "reference": "Isolated account mock PRD"})
+        dimensions[key] = {"status": "not_applicable", "decision": decision}
+    risks = []
+    for key, risk_id, points in (("functionality", "RISK-001", (1, 2)), ("data", "RISK-002", (4,)),
+                                 ("permission", "RISK-003", (3, 5)), ("regression", "RISK-004", (5,))):
+        risks.append({"id": risk_id, "dimension": key, "severity": "high" if key == "permission" else "medium",
+                      "source": specs[points[0] - 1][3], "invariant": specs[points[0] - 1][3],
+                      "impact": "The account lifecycle can produce the wrong final state",
+                      "scenarios": [{"id": f"SC-{point:03}", "criterion": f"AC-{point:03}", "layer": "online_ui",
+                                     "scenario": "negative" if point == 5 else "normal"} for point in points]})
+    write_json(directory / "risk-review.json", {**identity, "schema_version": 1, "source": "prd.md",
+                                                "dimensions": dimensions, "risks": risks})
 
 
 def run_workflow(server, output, profile, browser, env):
@@ -212,8 +284,8 @@ def run_workflow(server, output, profile, browser, env):
                 "Unexpected seed fill receipt")
 
     script("qa", "init", "--dir", str(output), "--project", PROJECT, "--run-id", run_id,
-           "--mode", "targeted", "--url", origin, "--version", VERSION)
-    actions = ["create", "delete"]
+           "--mode", "full", "--url", origin, "--version", VERSION)
+    actions = ["create", "update", "delete"]
     write_json(profile, {"seed_contract": 1, "project": PROJECT, "url": origin, "environment": "test",
                          "tenant": TENANT, "authorization": "loopback-account-demo", "external_effects": "disabled",
                          "actions": actions, "namespace": "account", "recipes": {RECIPE: {
@@ -246,6 +318,12 @@ def run_workflow(server, output, profile, browser, env):
         qa("record", "--case", CREATE, "--state", "passed", "--result", created)
         _, alias, password = server.account
 
+        sample("prepare-data", "before", UPDATE, "present")
+        agent(admin_session, "fill", "#update input", EDITED)
+        agent(admin_session, "click", "#update button")
+        edited = sample("reconcile-data", "after", UPDATE, "present")
+        qa("record", "--case", UPDATE, "--state", "passed", "--result", edited)
+
         fill(login_session, 2, "--login")
         require(server.member_session is None, "Seed fill submitted the login form")
         agent(login_session, "click", "#login button")
@@ -255,13 +333,16 @@ def run_workflow(server, output, profile, browser, env):
         session_value = server.member_session
 
         sample("prepare-data", "before", DELETE, "present")
-        agent(admin_session, "click", f"{row} button")
+        agent(admin_session, "click", f'{row} form[action="/delete"] button')
         deleted = sample("reconcile-data", "after", DELETE, "absent")
         qa("record", "--case", DELETE, "--state", "passed", "--result", deleted)
+        agent(admin_session, "reload")
         cleanup = capture(admin_session, "cleanup", "cleanup", "--fixture", FIXTURE)
         qa("close-data", "--tenant", TENANT, "--fixture", FIXTURE, "--evidence", cleanup)
         agent(login_session, "reload")
         agent(login_session, "wait", "#login")
+        denied = capture(login_session, "assert", "session-denied", "--case", DENIED)
+        qa("record", "--case", DENIED, "--state", "passed", "--result", denied)
         require(server.account is None and server.member_session is None, "Account or session remained after cleanup")
 
         qa("gate", code=1)
@@ -279,7 +360,7 @@ def run_workflow(server, output, profile, browser, env):
     require(all(secret not in line.encode("utf-8") for line in cli_text for secret in private)
             and all(all(secret not in path.read_bytes() for secret in private) for path in artifacts if path.is_file()),
             "Private account values appeared in CLI arguments, output or benchmark artifacts")
-    print("Seed account: created, signed in separately, deleted, and session invalidated. Functional gate passed.")
+    print("Full account PRD: created, edited, signed in separately, deleted, and session invalidated. Functional gate passed.")
     return directory
 
 

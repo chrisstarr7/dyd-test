@@ -3,7 +3,7 @@ import hashlib
 import json
 from datetime import datetime
 
-from qa_browser import redacted_measurement, validate_capture
+from qa_browser import exact_fixture, redacted_measurement, validate_capture
 from qa_contract import digest, evidence_file, index_objects, text, url_key
 from qa_pool import verify_lease
 
@@ -47,12 +47,13 @@ def load_context(directory):
 
 
 def fixture_cases(cases, fixtures):
-    """造数动作进入同一台账，独立于 PRD 用例与通过率。"""
-    setup = {f"setup:{key}": {"operation": "create", "fixture": key}
-             for key, fixture in fixtures.items() if fixture.get("source") == "generated"}
-    if cases.keys() & setup.keys():
+    """备数和补偿清理进入同一台账，独立于业务用例结果。"""
+    support = {f"{kind}:{key}": {"operation": action, "fixture": key}
+               for key, fixture in fixtures.items() if fixture.get("source") == "generated"
+               for kind, action in (("setup", "create"), ("cleanup", "delete"))}
+    if cases.keys() & support.keys():
         raise ValueError("用例编号与备数动作编号冲突")
-    return {**cases, **setup}
+    return {**cases, **support}
 
 
 def fixture_binding(directory, run, context, fixture_id, tenant, action):
@@ -85,6 +86,13 @@ def fixture_binding(directory, run, context, fixture_id, tenant, action):
             raise ValueError("测试写入或清理未授权")
     if run.get("qa_contract") == 2 and fixture["source"] == "pool":
         pool_receipt(directory, fixture, "reservation", action=action)
+    if run.get("assurance_contract") == 1:
+        related = exact_fixture(fixture).get("related", {})
+        counts = fixture.get("cleanup_counts")
+        if (not text(fixture.get("cleanup_scope")) or (fixture["source"] == "generated"
+                and (not isinstance(counts, dict) or counts.keys() != related.keys()
+                     or any(type(count) is not int or count != 0 for count in counts.values())))):
+            raise ValueError("须声明关联数据清理范围和独立回查的预期状态")
     return digest([run_id, origin, boundary, fixture, proof(directory, boundary.get("evidence")),
                    proof(directory, fixture.get("evidence"))])
 
@@ -151,13 +159,25 @@ def verify_attempt(directory, run, context, case, attempt, *, settled=True, page
         start, start_at = fixture_sample(directory, run, pages, fixture, attempt["before"], "before", probe_case)
         if (start["count"] == 1) != (attempt["before_state"] == "present"):
             raise ValueError("写入前状态与浏览器采集不一致")
+        effect = case.get("effect", {}) if run.get("evidence_contract") == 1 else {}
+        if effect.get("mode") == "change":
+            field = effect["field"]
+            if field not in start["fields"] or redacted_measurement(start["fields"][field]):
+                raise ValueError("修改目标字段的写入前基线无法核验")
+            if digest(start["fields"][field]) == digest(effect["to"]):
+                raise ValueError("修改前字段已等于目标值，请另选能验证变化的测试数据")
+        elif effect.get("mode") == "unchanged":
+            if start.get("action_received") is not False or (start["count"] and not start["fields"]):
+                raise ValueError("无变化操作需证明旧响应不存在，并采集对象字段基线")
         if settled:
             end, end_at = fixture_sample(directory, run, pages, fixture, attempt["after"], "after", probe_case)
+            if run.get("assurance_contract") == 1 and start["subject_digest"] != end["subject_digest"]:
+                raise ValueError("写入前后的实际登录主体不一致")
             if (end["session"] != start["session"] or end_at <= start_at
                     or (end["count"] == 1) != (attempt["after_state"] == "present")
                     or (path and attempt["after"]["path"] != path)):
                 raise ValueError("写入回查顺序、会话、业务状态或断言证据不一致")
-            if case.get("verify_reload") and (
+            if (case.get("verify_reload") or (run.get("assurance_contract") == 1 and not case.get("id"))) and (
                 not isinstance(start.get("document_start"), (int, float))
                 or not isinstance(end.get("document_start"), (int, float))
                 or end["document_start"] <= start["document_start"]
@@ -197,7 +217,7 @@ def prepare(directory, run, context, cases, case_id, tenant, before_state, evide
     verify_attempt(directory, run, context, case, ledger["attempts"][case_id], settled=False, pages=pages)
 
 
-def reconcile(directory, run, context, cases, case_id, tenant, state, evidence, pages=None):
+def reconcile(directory, run, context, cases, case_id, tenant, state, evidence, pages=None, receipt=None):
     _, _, ledger = context
     attempt = ledger["attempts"].get(case_id)
     if not attempt or tenant != attempt.get("tenant") or "after" in attempt:
@@ -206,7 +226,36 @@ def reconcile(directory, run, context, cases, case_id, tenant, state, evidence, 
     if after["path"] == attempt["before"]["path"]:
         raise ValueError("回查必须另存实际状态证据")
     attempt.update(after_state=state, after=after)
+    if receipt:
+        attempt["receipt"] = proof(directory, receipt)
     verify_attempt(directory, run, context, cases[case_id], attempt, pages=pages)
+
+
+def mutation_effect(directory, run, pages, fixture, case, attempt):
+    """区分发生变化、能力未获证明，以及已观察到结果不符合预期。"""
+    effect = case.get("effect", {}) if run.get("evidence_contract") == 1 else {}
+    if not effect:
+        return {}
+    start, start_at = fixture_sample(directory, run, pages, fixture, attempt["before"], "before", case)
+    end, end_at = fixture_sample(directory, run, pages, fixture, attempt["after"], "after", case)
+    result = {"mode": effect["mode"], "baseline": attempt["before"]["path"]}
+    if effect["mode"] == "change":
+        field = effect["field"]
+        actual = end["fields"].get(field)
+        result.update(field=field, before=start["fields"][field], after=actual,
+                      verified=field in end["fields"] and digest(actual) == digest(effect["to"]))
+    else:
+        if not attempt.get("receipt"):
+            raise ValueError("无变化操作缺少本次应用响应证据")
+        receipt, receipt_at = fixture_sample(directory, run, pages, fixture, attempt["receipt"], "action", case)
+        if (not start_at < receipt_at < end_at or receipt.get("action_received") is not True
+                or any(receipt[key] != start[key] for key in ("session", "subject_digest"))):
+            raise ValueError("应用响应与本次操作的主体、会话或采样顺序不一致")
+        if redacted_measurement(start["fields"]) or redacted_measurement(end["fields"]):
+            raise ValueError("无变化操作的前后字段无法核对")
+        result.update(receipt=attempt["receipt"]["path"],
+                      verified=all(start[key] == end[key] for key in ("count", "fields", "related")))
+    return result
 
 
 def verify_cleanup(directory, run, pages, fixture, attempts, saved):
@@ -215,6 +264,11 @@ def verify_cleanup(directory, run, pages, fixture, attempts, saved):
              for case, attempt in attempts]
     if any(final_at <= measured_at for _, measured_at in prior):
         raise ValueError("清理证据须采集于写入回查之后")
+    if run.get("assurance_contract") == 1 and prior:
+        last, _ = max(prior, key=lambda sample: sample[1])
+        if (last["subject_digest"] != final["subject_digest"]
+                or (last["session"], last.get("document_start")) == (final["session"], final.get("document_start"))):
+            raise ValueError("须以同一授权主体在新文档或独立会话复核清理")
     if fixture["source"] == "generated" and final["count"] != 0:
         raise ValueError("本轮生成夹具仍存在，不能登记清理")
     if fixture["source"] == "generated" and final["related"] != fixture.get("cleanup_counts", {

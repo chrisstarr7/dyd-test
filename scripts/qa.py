@@ -18,9 +18,9 @@ from pathlib import Path
 from qa_browser import PRIVATE_TEXT, SECRET_KEY, read_capture, redact_data, result_from_capture, validate_capture
 from qa_contract import check_page, check_plan, check_result, digest, evidence_file, index_objects, objects, text, url_key
 from qa_fixtures import (
-    close_fixture, fixture_cases, load_context, operation, prepare, reconcile, review_fixtures, verify_attempt,
+    close_fixture, fixture_cases, load_context, mutation_effect, operation, prepare, reconcile, review_fixtures, verify_attempt,
 )
-from qa_plan import freeze, verify_frozen
+from qa_plan import check_dependencies, coverage_gaps, freeze, review_obligations, verify_frozen
 from qa_release import review_admission, review_defects
 from qa_risk import review_risks
 
@@ -84,6 +84,9 @@ def cmd_init(args):
         run["fixture_contract"] = 1
     if previous is None or previous.get("qa_contract") == 2:
         run["qa_contract"] = 2
+    if previous is None:
+        run["assurance_contract"] = 1
+        run["evidence_contract"] = 1
     if previous and previous.get("qa_contract") == 2:
         # 续跑保留发布版本和既有范围，以免冻结计划与历史证据脱节。
         run = previous
@@ -219,6 +222,18 @@ def capture_ref(record):
     return observation.get("capture") if isinstance(observation, dict) else None
 
 
+def verify_dependencies(case, results, sampled_at, session):
+    """前置必须有更早的有效通过证据，员工自身的登录须独立会话。"""
+    for prerequisite in case.get("depends_on", []):
+        record = results.get(prerequisite, {})
+        evidence = record.get("observation") or {}
+        measured_at = evidence.get("sampled_at")
+        if record.get("state") != "passed" or not text(measured_at) or measured_at >= sampled_at:
+            raise ValueError(f"前置用例 {prerequisite} 尚无更早的有效通过证据")
+        if case.get("actor") == "fixture" and evidence.get("session") == session:
+            raise ValueError(f"本对象的登录验证须使用独立会话，不能复用 {prerequisite} 的会话")
+
+
 def evaluate(directory, run, case, pages, criteria, observation, context=None):
     page = pages.get(case.get("page"))
     action = operation(run, case)
@@ -227,6 +242,11 @@ def evaluate(directory, run, case, pages, criteria, observation, context=None):
         if not isinstance(observation, dict):
             raise ValueError("缺少浏览器采集引用")
         fixture = None
+        actor_fixture = None
+        if run.get("assurance_contract") == 1 and case.get("actor") == "fixture":
+            if context is None or not text(case.get("fixture")):
+                raise ValueError("登录用例须关联本轮测试夹具")
+            actor_fixture = context[1].get(case["fixture"])
         if action != "read":
             if context is None or not text(case.get("fixture")):
                 raise ValueError("测试数据台账或用例夹具不可用")
@@ -236,6 +256,7 @@ def evaluate(directory, run, case, pages, criteria, observation, context=None):
         calculated, fingerprints, observed = result_from_capture(
             directory, run, case, page, criteria, observation.get("capture"), fixture,
             before_path=context[2]["attempts"].get(case["id"], {}).get("before", {}).get("path") if fixture else None,
+            actor_fixture=actor_fixture,
         )
         capture_path = observed["capture"]
     else:
@@ -253,6 +274,11 @@ def evaluate(directory, run, case, pages, criteria, observation, context=None):
             if attempt["after_state"] != after:
                 calculated = "failed"
                 observed["lifecycle_mismatch"] = True
+            effect = mutation_effect(directory, run, pages, fixture, case, attempt)
+            if effect:
+                observed["effect"] = effect
+                if not effect["verified"]:
+                    calculated = "failed"
     return calculated, fingerprints, observed
 
 
@@ -286,8 +312,10 @@ def cmd_record(args):
             else:
                 observation = load_json(Path(args.result))
             _, criteria, _ = check_plan(requirements, raw_cases)
-            context = load_context(directory) if operation(run, case) != "read" else None
+            context = load_context(directory) if operation(run, case) != "read" or case.get("actor") == "fixture" else None
             calculated, fingerprints, observation = evaluate(directory, run, case, pages, criteria, observation, context)
+            if run.get("assurance_contract") == 1 and case.get("depends_on"):
+                verify_dependencies(case, assess(directory)["results"], observation["sampled_at"], observation["session"])
             if state == "observed":
                 state = calculated
             if strict and state == "passed":
@@ -364,18 +392,30 @@ def cmd_fixture(args):
                 raise ValueError("页面计划无效")
             verify_frozen(directory, run, load_json(directory / "requirements.json"), raw_cases, pages)
         context = load_context(directory)
-        if (run.get("qa_contract") == 2 and args.cmd == "prepare-data" and args.setup
-                and not any(case.get("fixture") == args.setup for case in cases.values())):
-            raise ValueError("备数目标未关联本轮冻结用例")
+        if args.cmd != "close-data":
+            support = args.setup or args.cleanup
+            if (run.get("qa_contract") == 2 and args.cmd == "prepare-data" and support
+                    and not any(case.get("fixture") == support for case in cases.values())):
+                raise ValueError("备数或清理目标未关联本轮冻结用例")
+            if args.cleanup and not any(item.get("fixture") == args.cleanup
+                                        for item in context[2]["attempts"].values()):
+                raise ValueError("补偿清理须关联本轮已登记的写入")
         cases = fixture_cases(cases, context[1])
         if args.cmd != "close-data":
-            case_id = f"setup:{args.setup}" if args.setup else args.case
-            if case_id not in cases or (not args.setup and case_id.startswith("setup:")):
+            case_id = args.case
+            if support:
+                kind = "setup" if args.setup else "cleanup"
+                case_id = f"{kind}:{support}"
+            if case_id not in cases or (not support and case_id.startswith(("setup:", "cleanup:"))):
                 raise ValueError("用例未登记或备数目标不属于本轮拟生成数据")
         if args.cmd == "prepare-data":
+            if run.get("assurance_contract") == 1 and cases[case_id].get("depends_on"):
+                _, current = read_capture(directory, args.evidence)
+                verify_dependencies(cases[case_id], assess(directory)["results"], current["time"], current["session"])
             prepare(directory, run, context, cases, case_id, args.tenant, args.state, args.evidence, pages)
         elif args.cmd == "reconcile-data":
-            reconcile(directory, run, context, cases, case_id, args.tenant, args.state, args.evidence, pages)
+            reconcile(directory, run, context, cases, case_id, args.tenant, args.state, args.evidence, pages,
+                      receipt=args.receipt)
         else:
             close_fixture(directory, run, context, cases, args.fixture, args.tenant, args.evidence, pages)
         staged = directory / "fixture-actions.tmp"
@@ -465,6 +505,7 @@ def assess(directory):
     """从同一批输入生成门禁、用例状态和覆盖指标，拒绝以旧结果放行。"""
     run = load_json(directory / "run.json")
     strict = run.get("qa_contract") == 2
+    assured = strict and run.get("assurance_contract") == 1
     requirements = load_json(directory / "requirements.json")
     raw_cases = load_cases(directory / "test-cases.json")
     cases, criteria, reasons = check_plan(requirements, raw_cases)
@@ -519,7 +560,14 @@ def assess(directory):
 
     planned_by = {key: [] for key in criteria}
     results = {}
-    for case_id, case in cases.items():
+    case_order = list(cases)
+    if assured:
+        try:
+            case_order = check_dependencies(cases)
+        except ValueError as error:
+            reasons.append(str(error))
+    for case_id in case_order:
+        case = cases[case_id]
         try:
             action = operation(run, case)
         except ValueError as error:
@@ -543,6 +591,12 @@ def assess(directory):
                 )
                 if calculated != state or fingerprints != record.get("fingerprints") or observation != recomputed:
                     raise ValueError("断言、页面计划或证据与记录时不一致")
+                if assured and case.get("depends_on"):
+                    verify_dependencies(case, results, recomputed["sampled_at"], recomputed["session"])
+                    if action != "read":
+                        sample = fixture_context[2]["attempts"][case_id]["before"]["path"]
+                        _, before = read_capture(directory, sample)
+                        verify_dependencies(case, results, before["time"], before["session"])
             except (OSError, TypeError, ValueError) as error:
                 reasons.append(f"用例 {case_id} 的执行证据无效：{error}")
                 state = "unknown"
@@ -575,6 +629,7 @@ def assess(directory):
                     and text(waiver.get("version")) and waiver["version"] == run.get("version")):
                 reasons.append(f"P2 缺陷无本版本书面让步：{defect.get('id')}")
     risk_review = None
+    flows = []
     if strict:
         reasons.extend(review_defects(directory, run, defects, results))
         defect_ids = {item.get("id") for item in defects if text(item.get("id"))}
@@ -585,6 +640,23 @@ def assess(directory):
         release_reasons = strict_admission(directory, run, pages, preflight)
         risk_reasons, risk_review = review_risks(directory, run, cases, results)
         reasons.extend(risk_reasons)
+        if assured:
+            try:
+                scope = load_json(directory / "prd-scope.json")
+                if run.get("mode") == "full":
+                    reasons.extend(coverage_gaps(scope, risk_review, cases))
+                    if run.get("evidence_contract") == 1:
+                        reasons.extend(review_obligations(directory, scope, criteria)[1])
+                    entries = scope.get("flows")
+                    if isinstance(entries, list):
+                        flows = [flow for flow in entries if isinstance(flow, dict) and text(flow.get("id"))
+                                 and text(flow.get("source")) and isinstance(flow.get("cases"), list)
+                                 and all(text(step) and step in results for step in flow["cases"])]
+                else:
+                    reasons.extend(f"PRD 第 {entry['from']}–{entry['to']} 行待澄清：{entry['reason']}"
+                                   for entry in scope["sections"] if entry["status"] == "pending")
+            except (OSError, ValueError, KeyError, TypeError):
+                reasons.append("PRD 范围记录无法核对")
 
     covered = {key for key, ids in planned_by.items() if ids}
     completed = {key for key in covered if all(results[case_id]["state"] in ("passed", "failed")
@@ -592,6 +664,8 @@ def assess(directory):
     passed_criteria = {
         key for key in completed if all(
             not results[case_id]["observation"].get("lifecycle_mismatch")
+            and results[case_id]["observation"].get("actor_verified", True)
+            and results[case_id]["observation"].get("effect", {}).get("verified", True)
             and digest(cases[case_id]["expected"][key]) == digest(results[case_id]["observation"]["assertions"][key]["actual"])
             for case_id in planned_by[key]
         )
@@ -628,7 +702,7 @@ def assess(directory):
     return {"run": run, "cases": cases, "results": results, "defects": defects, "stats": stats, "gate": gate,
             "criteria": criteria, "sources": sources, "covered": covered,
             "completed": completed, "passed_criteria": passed_criteria, "fixtures": fixture_entries,
-            "history": history, "risk_review": risk_review}
+            "history": history, "risk_review": risk_review, "flows": flows}
 
 
 def cmd_stats(args):
@@ -673,6 +747,13 @@ def format_report(review):
         for key, item in blockers:
             lines.append(f"- {key} · {BLOCKER_LABELS[item['blocker_kind']]} · {item['note']}"
                          f"。解除条件为 {item.get('unblock', '待确认')}")
+    if review.get("flows"):
+        lines += ["", "## 业务流程"]
+        states = {"passed": "通过", "failed": "失败", "blocked": "阻塞", "skipped": "跳过",
+                  "unknown": "证据无效", "planned": "未执行"}
+        for flow in review["flows"]:
+            lines.append(f"- {flow['id']}（{flow['source']}）")
+            lines.extend(f"  - {step} · {states[review['results'][step]['state']]}" for step in flow["cases"])
     risk = review.get("risk_review")
     if risk and risk["status"] == "reviewed":
         dimensions = {
@@ -704,6 +785,8 @@ def format_report(review):
                   else "未完成" if key in review["covered"] else "无关联用例")
         source = review["sources"].get(req_id) or "出处未确认"
         lines.append(f"- {key}（{req_id}，{source}）{criterion['rule']}：{status}")
+        if {"source_line", "source_part", "source_quote"} <= criterion.keys():
+            lines.append(f"  - PRD 第 {criterion['source_line']} 行第 {criterion['source_part']} 段：{criterion['source_quote']}")
     lines += ["", "## 断言与证据"]
     for case_id, record in review["results"].items():
         if record["state"] not in ("passed", "failed"):
@@ -715,6 +798,14 @@ def format_report(review):
         lines.append(f"- {case_id} · {case['page']} · {observation['role']} · {observation['url']}{suffix}")
         if observation.get("baseline_evidence"):
             lines.append(f"  - 写入前基线 {observation['baseline_evidence']}")
+        if "actor_verified" in observation:
+            lines.append("  - 测试对象登录主体核对：" + ("一致" if observation["actor_verified"] else "不一致"))
+        if "effect" in observation:
+            effect = observation["effect"]
+            status = "符合预期" if effect["verified"] else "与预期不符"
+            details = (f"字段 {effect['field']} · {effect['before']!r} → {effect['after']!r}"
+                       if effect["mode"] == "change" else f"本次应用响应 {effect['receipt']}")
+            lines.append(f"  - 写入效果 {status} · {details} · 基线 {effect['baseline']}")
         for key, assertion in observation["assertions"].items():
             expected = json.dumps(case["expected"][key], ensure_ascii=False)
             actual = json.dumps(assertion["actual"], ensure_ascii=False)
@@ -835,7 +926,10 @@ def build_parser():
             target = s.add_mutually_exclusive_group(required=True)
             target.add_argument("--case", help="PRD 用例编号")
             target.add_argument("--setup", help="仅备数时本轮拟生成的夹具编号")
+            target.add_argument("--cleanup", help="仅补偿清理本轮已创建的自有夹具")
             s.add_argument("--state", choices=["present", "absent"], required=True)
+            if command == "reconcile-data":
+                s.add_argument("--receipt", help="无变化操作本次响应的采集证据")
         s.set_defaults(func=cmd_fixture)
 
     s = sub.add_parser("record", help="追加执行记录并做状态流转校验")

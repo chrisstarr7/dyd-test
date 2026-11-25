@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import tempfile
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from test_qa import URL, acceptance_run, observation, qa, run_qa
 import dashboard
 import qa_browser
+import qa_fixtures
 import qa_pool
 
 
@@ -43,13 +45,13 @@ class TestStrictContract(unittest.TestCase):
         return self.cli("freeze-plan")
 
     def sample(self, filename, *, phase="assert", actual=True, count=None, session="local",
-               identity_proof=None, **other):
+               case_id="TC-001", identity_proof=None, **other):
         value = dict(url=URL, role="admin", tenant="local", online=True, anchors=[1, 1], ready=1,
                      observed={"AC-001": actual} if phase in ("assert", "after") else {},
                      count=count, fields={}, related={})
         value.update(other)
         target = {"page_id": "PAGE-001"} if phase == "page" else (
-            {"fixture_id": "DATA-001"} if phase == "cleanup" else {"case_id": "TC-001"}
+            {"fixture_id": "DATA-001"} if phase == "cleanup" or case_id is None else {"case_id": case_id}
         )
         with patch("qa_browser.collect", return_value=value):
             qa_browser.capture(self.run, session, phase, filename, identity_proof=identity_proof, **target)
@@ -57,6 +59,180 @@ class TestStrictContract(unittest.TestCase):
 
     def record(self, path, state="passed", *args):
         return self.cli("record", "--case", "TC-001", "--state", state, "--result", path, *args)
+
+    def assure(self, mode, *, evidence=False):
+        run = qa.load_json(self.run / "run.json")
+        run.update(mode=mode, assurance_contract=1)
+        if evidence:
+            run["evidence_contract"] = 1
+        qa.dump_json(self.run / "run.json", run)
+
+    def test_compound_prd_obligation_without_its_own_criterion_blocks_pass(self):
+        self.assure("full", evidence=True)
+        rule = "禁用员工后禁止登录并撤销已有会话"
+        source = self.run / "prd.md"
+        source.write_text(rule + "。\n", encoding="utf-8")
+        scope = qa.load_json(self.run / "prd-scope.json")
+        scope.update(source_complete=True, flows=[{"id": "FLOW-001", "source": "prd.md:1", "cases": ["TC-001"]}])
+        qa.dump_json(self.run / "prd-scope.json", scope)
+        self.requirements[0]["criteria"][0].update(source_line=1, source_part=1, source_quote=rule)
+        review = {"revision": "v1", "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                  "reviewer": "独立复核样例", "reference": "本地需求原文",
+                  "obligations": [
+                      {"id": "OB-001", "source_line": 1, "source_part": 1, "excerpt": "禁止登录",
+                       "rule": "禁止新登录", "criteria": ["AC-001"]},
+                      {"id": "OB-002", "source_line": 1, "source_part": 1, "excerpt": "撤销已有会话",
+                       "rule": "撤销已有会话", "criteria": []},
+                  ]}
+        qa.dump_json(self.run / "prd-review.json", review)
+        self.assertEqual(self.freeze(), 0)
+        self.assertEqual(self.record(self.sample("result.json")), 0)
+        gate = qa.assess(self.run)["gate"]
+        self.assertEqual(gate["test_outcome"], "incomplete")
+        self.assertIn("PRD 复核义务 OB-002 缺少验收点：撤销已有会话", gate["test_reasons"])
+        review["obligations"][1]["criteria"] = ["AC-001"]
+        qa.dump_json(self.run / "prd-review.json", review)
+        self.assertIn("复用其他义务", self.freeze())
+
+    def documented_update(self, effect, expected):
+        self.assure("targeted", evidence=True)
+        self.page["identity"]["principal"] = {"selector": "#account"}
+        self.case.update(operation="update", fixture="DATA-001", verify_reload=True, effect=effect,
+                         expected={"AC-001": expected},
+                         checks={"AC-001": {"selector": ".name", "read": "text", "scope": "fixture"}})
+        self.assertEqual(self.freeze(), 0)
+        (self.run / "scope.txt").write_text("Isolated local effect test", encoding="utf-8")
+        marker = "qa-r1-item"
+        qa.dump_json(self.run / "fixtures.json", {
+            "boundary": {"environment": "test", "url": URL, "tenant": "local", "authorization": "local mock",
+                         "actions": ["update", "restore"], "external_effects": "disabled", "evidence": "scope.txt"},
+            "fixtures": [{"id": "DATA-001", "tenant": "local", "page": "PAGE-001", "source": "reused",
+                          "ownership": "verified", "reference": marker, "marker": marker,
+                          "actions": ["update", "restore"], "cleanup": "restore", "evidence": "scope.txt",
+                          "cleanup_scope": "local object", "probe": {"selector": "#row", "ready": "#ready",
+                              "lookup": "complete", "key": {"selector": ".id", "value": marker},
+                              "fields": {"name": {"selector": ".name", "read": "text"}}}}],
+        })
+        return "--case", "TC-001", "--tenant", "local", "--state", "present"
+
+    def test_update_requires_a_different_baseline_and_verified_new_value(self):
+        args = self.documented_update({"mode": "change", "field": "name", "to": "after"}, "after")
+        before = self.sample("stale.json", phase="before", principal="admin", count=1, document_start=1,
+                             fields={"name": "after"})
+        self.assertIn("已等于目标值", self.cli("prepare-data", *args, "--evidence", before))
+        before = self.sample("before.json", phase="before", principal="admin", count=1, document_start=1,
+                             fields={"name": "before"})
+        self.assertEqual(self.cli("prepare-data", *args, "--evidence", before), 0)
+        after = self.sample("after.json", phase="after", principal="admin", count=1, document_start=2,
+                            fields={"name": "before"}, actual="after")
+        self.assertEqual(self.cli("reconcile-data", *args, "--evidence", after), 0)
+        self.assertNotEqual(self.record(after), 0)
+        self.assertEqual(self.record(after, "failed"), 0)
+        self.assertFalse(qa.assess(self.run)["results"]["TC-001"]["observation"]["effect"]["verified"])
+
+    def test_unchanged_update_requires_a_fresh_application_receipt(self):
+        args = self.documented_update({"mode": "unchanged", "receipt": {"selector": "#notice", "text": "Rejected"}}, "before")
+        before = self.sample("before.json", phase="before", principal="admin", count=1, document_start=1,
+                             fields={"name": "before"}, observed={"": False})
+        self.assertEqual(self.cli("prepare-data", *args, "--evidence", before), 0)
+        receipt = self.sample("receipt.json", phase="action", principal="admin", count=1, document_start=1,
+                              fields={"name": "before"}, observed={"": True})
+        after = self.sample("after.json", phase="after", principal="admin", count=1, document_start=2,
+                            fields={"name": "before"}, actual="before")
+        self.assertEqual(self.cli("reconcile-data", *args, "--evidence", after, "--receipt", receipt), 0)
+        _, fixtures, ledger = qa_fixtures.load_context(self.run)
+        attempt = dict(ledger["attempts"]["TC-001"])
+        del attempt["receipt"]
+        with self.assertRaisesRegex(ValueError, "缺少本次应用响应"):
+            qa_fixtures.mutation_effect(self.run, qa.load_json(self.run / "run.json"), {"PAGE-001": self.page},
+                                        fixtures["DATA-001"], self.case, attempt)
+        self.assertEqual(self.record(after), 0)
+
+    def test_full_run_rejects_same_line_omission_and_requires_reviewed_scope(self):
+        self.assure("full")
+        source = self.run / "prd.md"
+        source.write_text("提交后刷新；失败时保留原记录。\n第二项规则待业务确认。\n", encoding="utf-8")
+        scope = qa.load_json(self.run / "prd-scope.json")
+        scope.update(source_complete=False, flows=[{"id": "FLOW-001", "source": "prd.md:1", "cases": ["TC-001"]}])
+        scope["sections"].append({"from": 2, "to": 2, "status": "pending", "reason": "业务口径未确认"})
+        qa.dump_json(self.run / "prd-scope.json", scope)
+        criteria = self.requirements[0]["criteria"]
+        criteria[0].update(source_line=1, source_part=1, source_quote="提交后刷新")
+        self.assertIn("缺少验收点", self.freeze())
+        criteria.append(dict(criteria[0], id="AC-002", source_part=2, source_quote="失败时保留原记录",
+                             required=False, scope_note="跳过", scope_decision="本地说明"))
+        self.assertIn("不能标为非必测", self.freeze())
+        criteria[1].update(required=True, risk="high", risk_note="只验证主流程")
+        self.case["expected"]["AC-002"] = True
+        self.case["checks"]["AC-002"] = {"selector": "#other", "read": "visible"}
+        self.assertIn("高风险缺少", self.freeze())
+        criteria[1]["risk"] = "medium"
+        self.assertEqual(self.freeze(), 0)
+        self.assertEqual(self.record(self.sample("result.json", observed={"AC-001": True, "AC-002": True})), 0)
+        gate = qa.assess(self.run)["gate"]
+        self.assertEqual(gate["test_outcome"], "incomplete")
+        self.assertIn("完整 PRD 或引用附件未确认", gate["test_reasons"])
+        self.assertIn("缺少完整测试风险评审", gate["test_reasons"])
+        self.assertTrue(any("业务口径未确认" in reason for reason in gate["test_reasons"]))
+
+    def test_assured_chain_rejects_wrong_actor_and_keeps_compensation_available(self):
+        self.assure("targeted")
+        self.page["identity"]["principal"] = {"selector": "#account"}
+        self.case.update(operation="create", fixture="DATA-001", verify_reload=True)
+        login = dict(self.case, id="TC-002", operation="read", actor="fixture", depends_on=["TC-001"])
+        self.plan["cases"].append(login)
+        self.assertEqual(self.freeze(), 0)
+        (self.run / "scope.txt").write_text("isolated local coverage test", encoding="utf-8")
+        marker = "qa-r1-item"
+        qa.dump_json(self.run / "fixtures.json", {
+            "boundary": {"environment": "test", "url": URL, "tenant": "local", "authorization": "local mock",
+                         "actions": ["create", "delete"], "external_effects": "disabled", "evidence": "scope.txt"},
+            "fixtures": [{"id": "DATA-001", "tenant": "local", "page": "PAGE-001", "source": "generated",
+                          "ownership": "verified", "reference": marker, "marker": marker,
+                          "actions": ["create", "delete"], "cleanup": "delete", "evidence": "scope.txt",
+                          "cleanup_scope": "account and session", "cleanup_counts": {"session": 0},
+                          "probe": {"selector": "#row", "ready": "#ready", "lookup": "complete", "fields": {},
+                                    "key": {"selector": ".id", "value": marker}, "related": {"session": "#session"}}}],
+        })
+        login_args = ("--case", "TC-002", "--state", "observed")
+        early = self.sample("early.json", case_id="TC-002", session="member", principal=marker)
+        self.assertIn("更早的有效通过证据", self.cli("record", *login_args, "--result", early))
+        args = ("--case", "TC-001", "--tenant", "local")
+        before = self.sample("before.json", phase="before", count=0, document_start=1, principal="admin-a",
+                             related={"session": 0})
+        self.assertEqual(self.cli("prepare-data", *args, "--state", "absent", "--evidence", before), 0)
+        wrong = self.sample("wrong-admin.json", phase="after", count=1, document_start=2, principal="admin-b",
+                            related={"session": 0})
+        self.assertIn("实际登录主体不一致", self.cli("reconcile-data", *args, "--state", "present", "--evidence", wrong))
+        after = self.sample("after.json", phase="after", count=1, document_start=2, principal="admin-a",
+                            related={"session": 0})
+        self.assertEqual(self.cli("reconcile-data", *args, "--state", "present", "--evidence", after), 0)
+        self.assertEqual(self.record(after), 0)
+        self.assertIn("更早的有效通过证据", self.cli("record", *login_args, "--result", early))
+        reused = self.sample("reused.json", case_id="TC-002", principal=marker)
+        self.assertIn("独立会话", self.cli("record", *login_args, "--result", reused))
+        wrong = self.sample("wrong-member.json", case_id="TC-002", session="member", principal="other-account")
+        self.assertEqual(self.cli("record", *login_args, "--result", wrong), 0)
+        self.assertFalse(qa.assess(self.run)["results"]["TC-002"]["observation"]["actor_verified"])
+
+        cleanup_args = ("--cleanup", "DATA-001", "--tenant", "local")
+        before = self.sample("compensate-before.json", case_id=None, phase="before", count=1,
+                             document_start=3, principal="admin-a", related={"session": 1})
+        self.assertEqual(self.cli("prepare-data", *cleanup_args, "--state", "present", "--evidence", before), 0)
+        after = self.sample("compensate-after.json", case_id=None, phase="after", count=0,
+                            document_start=4, principal="admin-a", observed={}, related={"session": 1})
+        self.assertEqual(self.cli("reconcile-data", *cleanup_args, "--state", "absent", "--evidence", after), 0)
+        close_args = ("--fixture", "DATA-001", "--tenant", "local")
+        same_doc = self.sample("same-doc.json", phase="cleanup", count=0, document_start=4, principal="admin-a",
+                               related={"session": 0})
+        self.assertIn("新文档", self.cli("close-data", *close_args, "--evidence", same_doc))
+        retained = self.sample("retained.json", phase="cleanup", count=0, document_start=5, principal="admin-a",
+                               related={"session": 1})
+        self.assertIn("关联对象仍残留", self.cli("close-data", *close_args, "--evidence", retained))
+        clean = self.sample("clean.json", phase="cleanup", count=0, document_start=6, principal="admin-a",
+                            related={"session": 0})
+        self.assertEqual(self.cli("close-data", *close_args, "--evidence", clean), 0)
+        self.assertEqual(qa.assess(self.run)["gate"]["test_outcome"], "failed")
 
     def test_gate_requires_registered_measurement_and_separate_admission(self):
         self.assertEqual(self.freeze(), 0)

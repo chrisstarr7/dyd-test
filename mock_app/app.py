@@ -247,7 +247,7 @@ HTML = """<!doctype html>
   <button onclick="login()">登录</button><p id="login-msg"></p>
 </div>
 <div id="app" style="display:none">
-  <p>当前用户：<span id="me"></span> <button onclick="reset()">重置测试数据</button></p>
+  <p>当前用户：<span id="me"></span> <span id="principal"></span> <button onclick="reset()">重置测试数据</button></p>
   <label>搜索 <input id="q" oninput="list()"></label>
   <h2>物料列表</h2>
   <table border="1" id="table"><thead><tr><th>ID</th><th>名称</th><th>数量</th><th>单价</th><th>金额</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
@@ -273,7 +273,7 @@ async function login(){
   document.getElementById('app').style.display='block';
   load();
 }
-async function load(){ const me=await api('GET','/api/me'); document.getElementById('me').textContent=me.user?me.user.username+'('+me.user.role+')':''; list(); }
+async function load(){ const me=await api('GET','/api/me'); document.getElementById('me').textContent=me.user?me.user.username+'('+me.user.role+')':''; document.getElementById('principal').textContent=me.user?me.user.username:''; list(); }
 async function list(){
   const q=document.getElementById('q').value||'';
   const data=await api('GET','/api/items?q='+encodeURIComponent(q));

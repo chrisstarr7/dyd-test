@@ -18,7 +18,31 @@
 }
 ```
 
-文件中的有效行必须全部处置，范围不能重叠。将可独立失败的规则拆成独立验收点。用 `risk` 标记 `high`、`medium` 或 `low`，用 `scenarios` 明确哪些场景必须覆盖。按语义选择正常、边界、异常、角色、回归。有计算时在执行前固定公式、来源、单位和精度。高风险验收点只安排一种场景须提供 `risk_note`。非必测验收点需要 `required: false`、`scope_note` 和 `scope_decision`。
+文件中的有效行必须全部处置，范围不能重叠。将可独立失败的规则拆成独立验收点。用 `risk` 标记 `high`、`medium` 或 `low`，用 `scenarios` 明确哪些场景必须覆盖。按语义选择正常、边界、异常、角色、回归。有计算时在执行前固定公式、来源、单位和精度。专项或回归模式中，高风险验收点只安排一种场景须提供 `risk_note`。非必测验收点需要 `required: false`、`scope_note` 和 `scope_decision`。
+
+### 新运行的完整模式
+
+- 保存完整 PRD 与引用内容的可核验导出。`prd-scope.json` 的 `source_complete: true` 表示已核对版本、正文及引用附件。资料缺失时记 `false`，先测独立场景。`pending` 行段填写 `reason`。范围内验收点均为必测。范围排除或待确认内容会阻止 `full` 给出完整验收通过。
+- 每个验收点用 `source_line`、`source_part`、`source_quote` 引用原文片段。片段按每行的 `；`、`;` 和 `。` 分隔，去掉两端空白和空片段，序号从 1 开始。并列词、表格内的多个规则和跨行条件仍需复核，同片段可对应多个验收点。仅背景或排版行标 `context`，并写明原因。
+- 在 `prd-scope.json` 加 `flows`，如 `[{"id":"FLOW-001","source":"PRD 第 12–18 行","cases":["TC-001","TC-002","TC-003"]}]`。按顺序列出成功、拒绝和恢复路径。每个用例须出现在路径中，`depends_on` 记录后一步所需的有效前置，独立规则可登记单用例路径。
+- `risk-review.json` 逐项处置风险维度。范围内风险要验证通过，不适用须留决策出处。高风险至少两类场景，包含边界、异常或角色场景。先从原文和风险独立推导判据，再与用例对照。
+
+完整模式冻结前，由独立复核者只看原文拆出可独立失败的义务，再把每个义务与验收点对照。可用独立审查会话或项目已有的需求评审。缺复核时继续执行可测部分，完整验收显示未完成。`prd-review.json` 记录如下字段：
+
+```json
+{
+  "revision": "PRD v3",
+  "source_sha256": "原文文件的 SHA-256（Windows 可用 Get-FileHash）",
+  "reviewer": "实际复核者或独立审查会话标识",
+  "reference": "实际复核记录出处",
+  "obligations": [
+    {"id": "OB-001", "source_line": 12, "source_part": 1, "excerpt": "禁止登录", "rule": "禁止新登录", "criteria": ["AC-013"]},
+    {"id": "OB-002", "source_line": 12, "source_part": 1, "excerpt": "撤销已有会话", "rule": "撤销已有会话", "criteria": []}
+  ]
+}
+```
+
+哈希用小写十六进制。`excerpt` 取当前片段的原文子串，每个验收点最多关联一个独立义务。`criteria: []` 保留未覆盖项。脚本会检查明显的并列动作，整体语义和复核来源仍由实际复核者负责。复核清单与原文一同冻结。
 
 `requirements.json` 示例：
 
@@ -78,6 +102,9 @@
 ```
 
 `checks` 支持可见节点 `count`、单节点 `visible`、`text`、表单 `value` 和 `texts`。凭据、私人姓名等禁止采集。对隐私字段用脱敏稳定标识、业务状态和数量验证。分页或虚拟列表的可见条数只代表本次渲染，用于存在性和删除断言前，先做唯一标识查询并等筛选完成。验收点和用例默认 `layer: "online_ui"`。仅断网客户端校验的条目同时声明 `layer: "offline_ui"`，执行时另用隔离浏览器断网并拦截请求。后端拒绝、保存和持久化需要各自的在线验收点及刷新回查。
+
+- 新运行的写入用例须设 `verify_reload: true`，并登记独立的 `identity.principal`。修改断言至少一项使用 `scope: "fixture"`，读取精确匹配对象内的字段。关联同一对象的用例共享 `fixture`。登录读用例设 `actor: "fixture"` 和 `depends_on`，脚本会核对登录主体和独立会话。页面标题仅作为页面特征。
+- 高风险终态用独立判据或另一授权渠道复核，例如按同一业务标识从只读审计页或独立会话查询。若 PRD 要求服务、数据库或异步消息证据，而当前采集不可观测，在 `blocked_layers` 登记。脚本仅自动判定已支持的浏览器证据。
 
 ```sh
 python scripts/qa.py freeze-plan --dir <run>

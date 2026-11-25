@@ -63,6 +63,13 @@
 
 ## 单次写入、回查与收尾
 
+新版 `probe` 须登记 `key: {"selector": ".object-id", "value": "本轮唯一标识"}` 和独立的 `ready`（结果加载完成控件）。只在确认无分页、截断或虚拟列表时使用 `lookup: "complete"`。筛选场景用 `lookup: "filtered"`，登记 `applied: {"selector": "#applied-filter", "read": "text", "value": "本轮唯一标识"}` 及 `total: {"selector": "#matched-count", "read": "text"}`。采集核对已应用条件和数字总数，当前可见行必须覆盖全部命中。精确匹配后才采集对象字段。工作台显示不同标识时，可登记用于比对的非敏感 `principal_value`。
+
+`cleanup_scope` 写明关联对象。生成夹具通过 `probe.related` 和 `cleanup_counts` 登记需要回收的关联状态，无关联对象时可填空对象并说明依据。清理证据由同一授权主体在重新载入的页面或独立会话采集。若业务用例失败阻塞下游，用 `prepare-data/reconcile-data --cleanup <夹具编号>` 配合 `qa_browser.py --fixture <夹具编号> --phase before/after` 登记补偿删除，再独立采集 `cleanup` 并执行 `close-data`。补偿不计作业务用例通过。
+
+- 修改用例冻结 `effect: {"mode": "change", "field": "display_name", "to": "新名称"}`。字段取自夹具的 `probe.fields`。写入前实测值必须与目标不同，写入后在新文档回查同一字段。预期变化之外的业务断言照常核对。
+- 拒绝或幂等用例冻结 `effect: {"mode": "unchanged", "receipt": {"selector": "#result", "text": "应用预期响应"}}` 和预期对象存在状态。基线不得已有同一响应。提交后、刷新回查前执行 `qa_browser.py --phase action --case <用例> ...`，用 `reconcile-data --receipt <响应证据>` 登记。响应须是当前业务操作可观察的明确结果，优先使用该对象的结果标识。按基线比对对象字段与关联状态。响应无法获证时可登记实际回查并继续清理，业务用例保持未验证。
+
 1. 冻结计划后，从同一浏览器会话采集实际页面、角色、租户和唯一对象。登记成功后再执行一次正常界面操作：
 
    ```sh
