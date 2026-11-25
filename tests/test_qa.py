@@ -66,10 +66,14 @@ def run_qa(*args):
 URL = "http://127.0.0.1:8765/"
 
 
-def acceptance_run(root):
+def acceptance_run(root, strict=False):
     run_qa("init", "--project", "p", "--run-id", "r1", "--dir", str(root),
            "--url", URL, "--version", "v1")
     run = root / "p" / "r1"
+    if not strict:
+        legacy = qa.load_json(run / "run.json")
+        legacy.pop("qa_contract")
+        qa.dump_json(run / "run.json", legacy)
     (run / "page.txt").write_text("物料列表 | 新增物料 | 管理员", encoding="utf-8")
     qa.dump_json(run / "requirements.json", [{
         "id": "REQ-001", "source": "PRD §2",
@@ -77,7 +81,7 @@ def acceptance_run(root):
     }])
     qa.dump_json(run / "test-cases.json", {"cases": [{
         "id": "TC-001", "req": "REQ-001", "page": "PAGE-001",
-        "title": "<新增物料>", "steps": ["新增并刷新"], "expected": {"AC-001": True},
+        "title": "<查看物料>", "operation": "read", "steps": ["刷新后核对列表"], "expected": {"AC-001": True},
     }]})
     qa.dump_json(run / "pages.json", [{
         "id": "PAGE-001", "status": "confirmed", "entry": "登录 → 物料列表",

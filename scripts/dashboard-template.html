@@ -40,6 +40,7 @@ h1 { margin: 4px 0 17px; font-size: clamp(30px, 4vw, 44px); letter-spacing: -.05
 .gate { display: inline-flex; gap: 8px; align-items: center; padding: 6px 12px; border-radius: 8px; font-size: 14px; font-weight: 700; color: #e0e5fa; background: #ffffff20; }
 .gate.passed { color: #a5f2d6; background: #59dfaa20; }
 .gate.failed { color: #ffc0ca; background: #ff789528; }
+.gate.blocked { color: #ffe1a7; background: #ffc96624; }
 .gate::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .run-meta { min-width: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, .85fr) minmax(0, 1fr); gap: 12px 16px; padding: 15px 18px; border: 1px solid #ffffff26; border-radius: 14px; background: #ffffff0b; }
 .run-meta dt { font-size: 11px; color: #c8ceed; }
@@ -51,6 +52,10 @@ h1 { margin: 4px 0 17px; font-size: clamp(30px, 4vw, 44px); letter-spacing: -.05
 .reasons li + li { margin-top: 4px; }
 .reasons summary { padding: 6px 0 0; font-size: inherit; }
 .reasons summary::marker { color: currentColor; }
+.release { padding: 10px 34px; color: #d4d8f4; border-top: 1px solid #ffffff25; font-size: 13px; overflow-wrap: anywhere; }
+.release summary { padding: 0; color: inherit; font-size: inherit; }
+.release summary::marker { color: currentColor; }
+.release ul { margin: 6px 0 0; padding-inline-start: 18px; }
 .overview { display: grid; grid-template-columns: 1.12fr 1fr; gap: 18px; margin-top: 20px; }
 .panel { min-width: 0; background: #fff; border-radius: 16px; border: 1px solid var(--line); box-shadow: 0 5px 15px #23305308; }
 .overview .panel { padding: 21px 23px; }
@@ -111,10 +116,39 @@ tbody tr:hover { background: #fafbff; }
 .defect-meta { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 19px 14px; }
 .defect-meta span { padding: 4px 8px; background: #f3f5fa; border-radius: 7px; color: var(--muted); font-size: 12px; }
 .defect-meta strong { color: var(--ink); }
-.report { margin-top: 18px; }
+.report { margin-top: 18px; scroll-margin-top: 16px; }
+.report > summary:hover { color: #4c42ad; }
+.report-reading { display: grid; grid-template-columns: minmax(142px, 176px) minmax(0, 1fr); align-items: start; gap: 16px; padding: 18px; border-top: 1px solid var(--line); background: #f7f8fc; border-radius: 0 0 16px 16px; }
+.report .toc, .report .paper { border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.report .toc { position: sticky; top: 16px; display: grid; gap: 4px; padding: 13px; }
+.report .toc strong { padding: 0 7px 5px; }
+.report .toc a { border-radius: 6px; padding: 5px 7px; color: #4c42ad; }
+.report .toc a:hover, .report .toc a:focus-visible { background: #eeecfc; text-decoration: underline; }
+.report .chapters { min-width: 0; display: grid; gap: 12px; }
+.report .paper { padding: clamp(14px, 2.4vw, 24px); scroll-margin-top: 16px; overflow-wrap: anywhere; }
+.report .paper:target { border-color: #8e81d5; }
+.report .paper h2 { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.report .paper ul { padding-inline-start: 20px; margin: 6px 0 0; }
+.report .paper > ul { padding: 0; list-style: none; }
+.report .paper > ul > li { padding: 9px 0; }
+.report .paper > ul > li + li { border-top: 1px solid #edf0f6; }
+.report .paper ul ul { color: var(--muted); }
+.report .paper ul ul li + li { margin-top: 4px; }
+.report .paper > ul > li:has(> .status) { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.report .status { flex: 0 0 auto; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 700; color: #4b5872; background: #edf0f6; }
+.report .status.passed { color: #086047; background: #def5eb; }
+.report .status.failed { color: #9c243f; background: #fce8ed; }
+.report .status.pending { color: #7a4507; background: #fff0d6; }
+.report .paper:first-child > ul > li { font-weight: 700; }
+.report .paper:first-child ul ul { font-weight: 400; }
+.report .stats > ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+.report .stats > ul > li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; border-bottom: 1px solid #edf0f6; border-top: 0; }
+.report .stats strong { color: #4c42ad; }
+.report-text { white-space: pre-wrap; margin-top: 8px; }
+.report .raw summary { padding: 0; font-size: 14px; color: #4c42ad; }
+.report pre { margin: 12px 0 0; padding: 12px; border-radius: 8px; background: #f3f5fa; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 summary { padding: 15px 19px; cursor: pointer; }
 summary::marker { color: #5554bc; }
-pre { margin: 0; padding: 16px 19px; border-top: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 "Cascadia Mono", Consolas, monospace; }
 @media (max-width: 920px) {
   .details-grid { grid-template-columns: 1fr; }
 }
@@ -122,11 +156,11 @@ pre { margin: 0; padding: 16px 19px; border-top: 1px solid var(--line); white-sp
   .shell { width: calc(100% - 32px); }
   .masthead .shell { min-height: 52px; }
   nav { gap: 12px; font-size: 12px; }
-  nav a:first-child { display: none; }
+  .masthead nav a:first-child { display: none; }
   main { padding-block: 16px 28px; }
   .hero-inner, .overview { grid-template-columns: minmax(0, 1fr); }
   .hero-inner { padding: 21px; gap: 16px; }
-  .reasons { padding-inline: 21px; }
+  .reasons, .release { padding-inline: 21px; }
   .overview, .details-grid { gap: 12px; margin-top: 12px; }
   .overview .panel { padding: 16px; }
   .outcome { grid-template-columns: 130px minmax(0, 1fr); gap: 15px; }
@@ -137,6 +171,10 @@ pre { margin: 0; padding: 16px 19px; border-top: 1px solid var(--line); white-sp
   th:first-child, td:first-child { padding-left: 11px; }
   th:nth-child(3) { width: 19%; }
   th:last-child, td:last-child { width: 22%; }
+  .report-reading { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; }
+  .report .toc { position: static; display: flex; align-items: baseline; flex-wrap: wrap; }
+  .report .stats > ul { grid-template-columns: minmax(0, 1fr); }
+  .report .paper > ul > li:has(> .status) { flex-wrap: wrap; }
 }
 </style>
 </head>
@@ -165,6 +203,7 @@ pre { margin: 0; padding: 16px 19px; border-top: 1px solid var(--line); white-sp
       </dl>
     </div>
     ${reasons}
+    ${release}
   </header>
   <div class="overview">
     <section class="panel" aria-labelledby="outcome-title">
@@ -209,7 +248,7 @@ pre { margin: 0; padding: 16px 19px; border-top: 1px solid var(--line); white-sp
       </div>
     </section>
   </div>
-  <details class="panel report" id="report"><summary>报告原文</summary><pre>${report}</pre></details>
+  <details class="panel report" id="report"><summary>报告原文</summary>${report}</details>
 </main>
 <script>
 const rows = [...document.querySelectorAll('#case-rows [data-state]')];
@@ -235,9 +274,20 @@ if (rows.length) {
   search.addEventListener('input', filterCases);
   status.addEventListener('change', filterCases);
 }
-document.querySelector('nav a[href="#report"]').addEventListener('click', () => {
-  document.getElementById('report').open = true;
+
+const report = document.getElementById('report');
+function openLinkedReport() {
+  const target = document.getElementById(location.hash.slice(1));
+  if (!report.open && report.contains(target)) {
+    report.open = true;
+    target.scrollIntoView();
+  }
+}
+document.querySelector('.masthead a[href="#report"]').addEventListener('click', () => {
+  report.open = true;
 });
+window.addEventListener('hashchange', openLinkedReport);
+openLinkedReport();
 </script>
 </body>
 </html>

@@ -252,8 +252,10 @@ HTML = """<!doctype html>
   <h2>物料列表</h2>
   <table border="1" id="table"><thead><tr><th>ID</th><th>名称</th><th>数量</th><th>单价</th><th>金额</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
   <h2>新增物料</h2>
-  名称 <input id="name"> 数量 <input id="qty" type="number"> 单价 <input id="price" type="number">
-  <button onclick="add()">新增</button> <span id="add-msg"></span>
+  <form id="new-item-form">
+    名称 <input id="name"> 数量 <input id="qty" type="number"> 单价 <input id="price" type="number">
+    <button type="button" onclick="add()">新增</button> <span id="add-msg"></span>
+  </form>
   <h2>批量启用</h2>
   <button onclick="batchAll()">批量启用本页全部</button> <span id="batch-msg"></span>
 </div>
@@ -278,6 +280,7 @@ async function list(){
   const tb=document.querySelector('#table tbody'); tb.innerHTML='';
   for(const it of (data.items||[])){
     const tr=document.createElement('tr');
+    tr.dataset.itemName=it.name;
     tr.innerHTML='<td>'+it.id+'</td><td>'+it.name+'</td><td>'+it.qty+'</td><td>'+it.price+'</td><td>'+it.amount+'</td><td>'+it.status+'</td><td><button onclick="del('+it.id+')">删除</button></td>';
     tb.appendChild(tr);
   }

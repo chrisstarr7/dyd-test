@@ -32,6 +32,8 @@ npx -y skills add chrisstarr7/dyd-test -g -a codex
 
 必要输入：需求文档、测试环境 URL、登录方式与账号。可选：已有用例 CSV/Excel、提测文档与版本号、增量 SQL 执行记录、接口文档、不同角色账号、历史缺陷与回归用例、禅道测试单。
 
+这条指令会在确认测试环境、租户及外部影响后，对本轮生成的测试数据执行需求内的新增、修改、删除和清理。指定「只读」可限制本轮测试。涉及已有对象、共享余额或真实外发时，按项目专项授权执行。详见 [自主备数与回收](references/test-data-workflow.md)。
+
 ## 三种模式
 
 - `full`（默认）：需求驱动 + 探索测试 + 相关回归
@@ -58,14 +60,17 @@ npx -y skills add chrisstarr7/dyd-test -g -a codex
 python scripts/qa.py init --project <p> --url <u> --version <v> --mode full
 python scripts/qa.py parse-cases --file <用例.csv> --out <run>/test-cases.json
 python scripts/qa.py check-cases --cases <run>/test-cases.json --reqs <run>/requirements.json
-python scripts/qa.py check-page --dir <run> --page PAGE-001 --url <实际URL> --role <实际角色> --snapshot evidence/page.txt
-python scripts/qa.py record --dir <run> --case TC-001 --state passed --result <run>/TC-001-result.json
+python scripts/qa.py freeze-plan --dir <run>
+python scripts/qa_browser.py --dir <run> --session <session> --case TC-001 --phase assert --output evidence/TC-001.json
+python scripts/qa.py record --dir <run> --case TC-001 --state passed --result evidence/TC-001.json
 python scripts/qa.py report --dir <run>
 ```
 
-先按 [PRD 验收记录](references/acceptance-contract.md) 拆分验收点并关联实际页面。测试时核对浏览器路由、角色和页面特征，记录每项预期、实测值与证据。报告和看板从同一批有效记录计算验收点覆盖与门禁。
+先按 [PRD 验收、浏览器采集与发布准入](references/acceptance-contract.md) 对齐原文、风险场景和实际页面，再冻结计划。采集器读取当前浏览器路由、角色、租户和业务字段，报告与看板使用同一份有效记录计算结果。
 
-空计划、必测项无用例或未完成、证据失效、准入缺失、P0/P1 未闭环、P2 无本版本书面让步时，门禁不通过。历史记录缺少新字段时仍可查看，无法据此重新判定通过。
+写入用例按 [自主备数与回收](references/test-data-workflow.md) 在已授权边界内准备数据。支持 [本地项目夹具池](references/project-test-data.md) 的预留、恢复核验和归还。
+
+功能结论覆盖本轮验收范围。正式发布准入另需经核验的版本和迁移记录。必测未完成、证据失效、数据未回查或未回收、P0/P1 未闭环、P2 无本版本书面让步都会阻塞放行。历史运行仍可读取。
 
 ## 本地模拟被测系统
 
@@ -81,11 +86,18 @@ python mock_app/app.py            # 注入缺陷，用于对抗测试
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py"
+python -B tests/browser_benchmark.py
+python -B tests/enterprise_browser_benchmark.py
+python -B tests/seed_account_benchmark.py
 ```
+
+浏览器基准使用本地模拟系统，验证同地址错页、延迟加载、漏测、金额错误、保存后未持久化及删除后残留。
+
+[企业测试执行指南](references/enterprise-testing.md)覆盖风险规划、分层验证和跨业务判据。新版支持风险证据冻结、合成夹具及受控浏览器填值、空态身份核验、十进制业务断言和阻塞归因。
 
 ## 输出目录
 
-`dyd-test-output/{project}/{run-id}/`：`run.json`、`requirements.json`、`test-cases.json`、`pages.json`、`execution.jsonl`、`defects.json`、`preflight.json`、`stats.json`、`gate.json`、`report.md`、`dashboard.html`，以及 `evidence/`、`screenshots/`、`videos/`、`logs/`。
+`dyd-test-output/{project}/{run-id}/` 存放用例、验收点、页面、执行记录、报告、看板和证据。`fixtures.json` 记录测试数据边界，`fixture-actions.json` 记录写入、回查和回收。
 
 ### 测试结果看板
 
@@ -94,7 +106,7 @@ python -m unittest discover -s tests -p "test_*.py"
 - Windows：`Start-Process -WindowStyle Hidden python -ArgumentList 'scripts/dashboard.py','--dir','<run>'`
 - macOS：`nohup python3 scripts/dashboard.py --dir <run> >/dev/null 2>&1 &`
 
-看板只监听 `127.0.0.1`，默认端口 `8899`（占用时自动递增），并只输出生成的 `dashboard.html`，不暴露任务目录内的截图、日志等其他文件。
+展开看板底部的「报告原文」即可通过目录查看验收点和断言证据。`dashboard.html` 可离线打开。本地服务只监听 `127.0.0.1`（默认端口 `8899`，占用时自动递增），仅提供看板页。
 
 ## 安全与能力边界
 
