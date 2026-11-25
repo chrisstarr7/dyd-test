@@ -60,6 +60,7 @@ python scripts/qa.py stats --dir <run>
 python scripts/qa.py gate --dir <run>
 python scripts/qa.py report --dir <run>
 python scripts/qa.py redact --dir <run>
+python scripts/dashboard.py --dir <run>
 ```
 
 - 状态：`planned | passed | failed | blocked | skipped`。`planned` 不可直接记录。
@@ -101,8 +102,18 @@ P0/P1 未闭环、P2 未让步接收、数据核对缺失、PASS 无证据、环
 ## 输出目录
 
 `dyd-test-output/{project}/{run-id}/`：`run.json`、`requirements.json`、`test-cases.json`、
-`execution.jsonl`、`defects.json`、`preflight.json`、`stats.json`、`gate.json`、`report.md`，
-以及 `screenshots/`、`videos/`、`logs/`。无数据字段写"未接入/未执行/无法验证/待确认"。
+`execution.jsonl`、`defects.json`、`preflight.json`、`stats.json`、`gate.json`、`report.md`、
+`dashboard.html`，以及 `screenshots/`、`videos/`、`logs/`。无数据字段写"未接入/未执行/无法验证/待确认"。
+
+## 测试结果看板
+
+全部阶段完成且 `report` 已生成后，启动本地看板（后台运行并自动打开浏览器）：
+
+- Windows：`Start-Process -WindowStyle Hidden python -ArgumentList 'scripts/dashboard.py','--dir','<run>'`
+- macOS：`nohup python3 scripts/dashboard.py --dir <run> >/dev/null 2>&1 &`
+
+看板从 `stats.json`、`gate.json`、`defects.json`、`execution.jsonl`、`report.md` 生成 `dashboard.html`，
+只监听 127.0.0.1 的本地端口（默认 8899，占用则自动递增），仅输出看板页，不暴露任务目录内其他文件。
 
 ## 断点恢复
 

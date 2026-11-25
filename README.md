@@ -85,7 +85,16 @@ python -m unittest discover -s tests -p "test_*.py"
 
 ## 输出目录
 
-`dyd-test-output/{project}/{run-id}/`：`run.json`、`requirements.json`、`test-cases.json`、`execution.jsonl`、`defects.json`、`preflight.json`、`stats.json`、`gate.json`、`report.md`，以及 `screenshots/`、`videos/`、`logs/`。无数据字段写“未接入/未执行/无法验证/待确认”。
+`dyd-test-output/{project}/{run-id}/`：`run.json`、`requirements.json`、`test-cases.json`、`execution.jsonl`、`defects.json`、`preflight.json`、`stats.json`、`gate.json`、`report.md`、`dashboard.html`，以及 `screenshots/`、`videos/`、`logs/`。无数据字段写“未接入/未执行/无法验证/待确认”。
+
+### 测试结果看板
+
+全部阶段完成并生成报告后，Skill 会在本地启动结果看板并自动打开浏览器。后台启动命令：
+
+- Windows：`Start-Process -WindowStyle Hidden python -ArgumentList 'scripts/dashboard.py','--dir','<run>'`
+- macOS：`nohup python3 scripts/dashboard.py --dir <run> >/dev/null 2>&1 &`
+
+看板只监听 `127.0.0.1`，默认端口 `8899`（占用时自动递增），并只输出生成的 `dashboard.html`，不暴露任务目录内的截图、日志等其他文件。
 
 ## 安全与能力边界
 
