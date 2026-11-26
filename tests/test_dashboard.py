@@ -67,7 +67,11 @@ class TestDashboard(unittest.TestCase):
             shutil.copytree(first, second)
             run = qa.load_json(second / "run.json")
             run["run_id"] = "r2"
+            run["task_id"] = "memory-v3"
             qa.dump_json(second / "run.json", run)
+            first_run = qa.load_json(first / "run.json")
+            first_run["task_id"] = "memory-v3"
+            qa.dump_json(first / "run.json", first_run)
             self.assertEqual(run_qa("record", "--dir", str(second), "--case", "TC-001",
                                     "--state", "failed", "--result", observation(second, actual=False),
                                     "--note", "断言失败", "--defect", "BUG-001")[0], 0)
@@ -76,6 +80,7 @@ class TestDashboard(unittest.TestCase):
             self.assertIn("测试任务看板", html)
             self.assertIn("2 个运行 · 1 个看板", html)
             self.assertIn("测试未完成", html)
+            self.assertIn("memory-v3", html)
             self.assertIn("r1", html)
             self.assertIn("r2", html)
             self.assertIn("正式发布准入：待确认（含旧版运行）", html)
@@ -97,7 +102,22 @@ class TestDashboard(unittest.TestCase):
             run["run_id"] = "r2"
             run["url"] = "https://another.example.test/"
             qa.dump_json(second / "run.json", run)
-            with self.assertRaisesRegex(ValueError, "同一项目、同一测试地址"):
+            with self.assertRaisesRegex(ValueError, "同一需求、同一项目、同一测试地址"):
+                dashboard.build_collection_html([first, second])
+
+    def test_collection_dashboard_rejects_different_requirements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = acceptance_run(Path(directory))
+            first_run = qa.load_json(first / "run.json")
+            first_run["task_id"] = "memory"
+            qa.dump_json(first / "run.json", first_run)
+            second = first.parent / "r2"
+            shutil.copytree(first, second)
+            second_run = qa.load_json(second / "run.json")
+            second_run["run_id"] = "r2"
+            second_run["task_id"] = "workspace"
+            qa.dump_json(second / "run.json", second_run)
+            with self.assertRaisesRegex(ValueError, "task_id"):
                 dashboard.build_collection_html([first, second])
 
     def test_dashboard_and_report_reject_stale_gate(self):

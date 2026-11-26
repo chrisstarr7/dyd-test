@@ -82,6 +82,8 @@ def cmd_init(args):
         "cases_file": "",
         "requirements_file": "",
     }
+    if args.task_id:
+        run["task_id"] = args.task_id.strip()
     if args.project_id:
         if not re.fullmatch(r"[a-f0-9]{32}", args.project_id):
             raise SystemExit("项目 ID 须为 32 位小写十六进制")
@@ -97,6 +99,10 @@ def cmd_init(args):
     if previous and previous.get("qa_contract") == 2:
         # 续跑保留发布版本和既有范围，以免冻结计划与历史证据脱节。
         run = previous
+        if args.task_id:
+            if run.get("task_id") and run["task_id"] != args.task_id.strip():
+                raise SystemExit("task-id 与既有运行不一致")
+            run["task_id"] = args.task_id.strip()
     dump_json(target / "run.json", run)
     (target / "execution.jsonl").touch(exist_ok=True)
     for name, default in (("requirements.json", []), ("test-cases.json", {"cases": []}), ("pages.json", []),
@@ -1043,6 +1049,7 @@ def build_parser():
     s = sub.add_parser("init", help="初始化任务目录")
     s.add_argument("--project", required=True)
     s.add_argument("--project-id", help="可选稳定项目 ID，用于已关闭缺陷派生经验")
+    s.add_argument("--task-id", help="同一测试需求的主测、补测与重复运行共用此标识")
     s.add_argument("--run-id", default="")
     s.add_argument("--mode", default="full", choices=["full", "targeted", "regression"])
     s.add_argument("--url", default="")

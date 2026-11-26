@@ -66,7 +66,7 @@ description: >
 先读 [PRD 验收、浏览器采集与发布准入](references/acceptance-contract.md)。从原文建立范围索引、验收点和风险场景，只读发现页面后冻结计划，再执行测试。旧格式用来回看历史运行。
 
 ```bash
-python scripts/qa.py init --project <p> --url <u> --version <v> --mode full
+python scripts/qa.py init --project <p> --task-id <需求稳定标识> --url <u> --version <v> --mode full
 python scripts/qa.py parse-cases --file <用例.csv> --out <run>/test-cases.json
 python scripts/qa.py check-cases --cases <run>/test-cases.json --reqs <run>/requirements.json
 python scripts/qa.py freeze-plan --dir <run>
@@ -78,6 +78,8 @@ python scripts/dashboard.py --dir <run>
 ```
 
 - 状态：`planned | passed | failed | blocked | skipped`。`planned` 不可直接记录。
+- 同一需求的所有运行复用 `task-id`，每个运行仍使用独立 `run-id`。`task-id` 按需求内容生成稳定短标识，
+  不按时间或运行编号生成；不同需求不得复用。
 - `record` 按冻结的判据比较真实采集结果。金额、数量和余额关系使用脚本计算；需要持久化时刷新回查。复测另存证据，失败改判需要归因。阻塞说明类别和可验证的解除条件。
 - 完整测试先由独立复核者只读原 PRD，另列可独立失败的业务义务，再与执行计划对照并登记 `prd-review.json`。缺复核或存在漏项时，完整验收保持未完成。用例依赖失败时记录下游阻塞，继续验证独立场景并执行补偿清理。
 - 写入用例按 [数据台账](references/test-data-workflow.md) 完成同会话采集和回查，再做独立清理核验。可用项目配置的入口见 [项目夹具来源与租约](references/project-test-data.md)。
@@ -127,12 +129,14 @@ P0/P1 未闭环、P2 未让步接收、数据核对缺失、PASS 无证据、环
 ## 测试结果看板
 
 全部阶段完成且各运行 `report` 已生成后，启动本地看板（后台运行并自动打开浏览器）。
-同一测试任务的主运行、补测和重复运行必须放进同一个看板，只启动一次；只有不同测试需求才分别启动看板：
+一个需求只启动一个最终看板。该需求的主运行、补测和重复运行共用相同的 `task-id`，用多个 `--dir`
+放进同一个看板且只启动一次。本地并发测试其他需求时，各需求使用不同 `task-id` 并分别启动看板，
+端口从默认值开始自动选择：
 
 - Windows：`Start-Process -WindowStyle Hidden python -ArgumentList @('scripts/dashboard.py','--dir','<run-1>','--dir','<run-2>')`
 - macOS：`nohup python3 scripts/dashboard.py --dir <run-1> --dir <run-2> >/dev/null 2>&1 &`
 
-只有一个运行时省略第二个 `--dir`。聚合看板按项目与测试地址校验范围，整体结论取最严重运行结果，
+只有一个运行时省略第二个 `--dir`。聚合看板按 `task-id`、项目与测试地址校验范围，整体结论取最严重运行结果，
 各运行统计不跨运行相加；运行明细内可展开对应报告原文。看板从原始记录重新核验门禁，并将聚合页写入首个运行的
 `dashboard.html`。本地服务只监听 127.0.0.1（默认 8899，占用时自动递增），同一任务不得重复启动端口。
 

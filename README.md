@@ -59,7 +59,7 @@ npx -y skills add chrisstarr7/dyd-test -g -a codex
 新运行默认核对 PRD 条款、业务路径、前置证据与数据回收。完整测试要求必测条款和高风险场景有实际证据，资料不全或范围内验证缺失时显示「测试未完成」。详见 [验收契约](references/acceptance-contract.md) 和 [测试数据流程](references/test-data-workflow.md)。
 
 ```sh
-python scripts/qa.py init --project <p> --url <u> --version <v> --mode full
+python scripts/qa.py init --project <p> --task-id <需求稳定标识> --url <u> --version <v> --mode full
 python scripts/qa.py parse-cases --file <用例.csv> --out <run>/test-cases.json
 python scripts/qa.py check-cases --cases <run>/test-cases.json --reqs <run>/requirements.json
 python scripts/qa.py freeze-plan --dir <run>
@@ -71,6 +71,8 @@ python scripts/qa.py report --dir <run>
 先按 [PRD 验收、浏览器采集与发布准入](references/acceptance-contract.md) 对齐原文、风险场景和实际页面，再冻结计划。采集器读取当前浏览器路由、角色、租户和业务字段，报告与看板使用同一份有效记录计算结果。
 
 写入用例按 [自主备数与回收](references/test-data-workflow.md) 在已授权边界内准备数据。支持 [本地项目夹具池](references/project-test-data.md) 的预留、恢复核验和归还。
+
+同一需求的主测、补测和重复运行复用同一 `task-id`，每次运行使用独立 `run-id`；不同需求使用不同标识。
 
 功能结论覆盖本轮验收范围。正式发布准入另需经核验的版本和迁移记录。必测未完成、证据失效、数据未回查或未回收、P0/P1 未闭环、P2 无本版本书面让步都会阻塞放行。历史运行仍可读取。
 
@@ -133,8 +135,10 @@ python -B tests/seed_account_benchmark.py
 - Windows：`Start-Process -WindowStyle Hidden python -ArgumentList @('scripts/dashboard.py','--dir','<run-1>','--dir','<run-2>')`
 - macOS：`nohup python3 scripts/dashboard.py --dir <run-1> --dir <run-2> >/dev/null 2>&1 &`
 
-同一测试任务的补测和重复运行使用多个 `--dir` 合并为一个看板、一个端口；只有一个运行时可省略第二个参数。
-聚合页按项目与测试地址校验范围，整体结论取最严重运行结果，各运行统计不跨运行相加。每个运行内的「报告原文」
+一个需求只对应一个最终看板。该需求的主测、补测和重复运行使用相同 `task-id`，通过多个 `--dir`
+合并为一个看板、一个端口；只有一个运行时可省略第二个参数。并发测试多个需求时，各需求使用不同
+`task-id` 并分别启动看板，端口自动递增。聚合页按 `task-id`、项目与测试地址校验范围，整体结论取最严重
+运行结果，各运行统计不跨运行相加。每个运行内的「报告原文」
 可展开查看验收点和断言证据。`dashboard.html` 可离线打开。本地服务只监听 `127.0.0.1`（默认端口 `8899`，
 占用时自动递增）；不同测试需求分别启动看板，同一任务不得重复打开多个端口。
 

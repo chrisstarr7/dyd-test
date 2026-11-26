@@ -281,9 +281,9 @@ def build_collection_html(directories) -> str:
         raise ValueError("聚合看板至少需要两个运行目录")
     reviews = [assess(directory) for directory in directories]
     runs = [review["run"] for review in reviews]
-    scope = {(run.get("project"), run.get("url")) for run in runs}
+    scope = {(run.get("project"), run.get("url"), run.get("task_id")) for run in runs}
     if len(scope) != 1:
-        raise ValueError("只能聚合同一项目、同一测试地址的运行")
+        raise ValueError("只能聚合同一需求、同一项目、同一测试地址的运行；请核对 task_id")
 
     outcome = task_outcome(reviews)
     tone = {"passed": "passed", "failed": "failed", "incomplete": "blocked"}[outcome]
@@ -361,6 +361,7 @@ def build_collection_html(directories) -> str:
     }[outcome]
     return Template(Path(__file__).with_name("dashboard-collection-template.html").read_text(encoding="utf-8")).substitute(
         project=esc(runs[0].get("project") or "未命名项目"),
+        task_id=esc(runs[0].get("task_id") or "未记录"),
         environment=esc(runs[0].get("url") or "未记录"),
         version=esc(" / ".join(dict.fromkeys(run.get("version") or "未记录" for run in runs))),
         run_count=len(reviews),

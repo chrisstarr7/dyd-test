@@ -126,6 +126,20 @@ class TestInit(unittest.TestCase):
             code, _ = run_qa("init", "--project", "p", "--run-id", "r1", "--dir", td)
             self.assertNotEqual(code, 0)
 
+    def test_task_id_is_saved_and_resume_cannot_change_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self.assertEqual(run_qa("init", "--project", "p", "--run-id", "r1", "--task-id", "memory",
+                                    "--dir", str(out))[0], 0)
+            run_path = out / "p" / "r1" / "run.json"
+            self.assertEqual(qa.load_json(run_path)["task_id"], "memory")
+            self.assertEqual(run_qa("init", "--project", "p", "--run-id", "r1", "--task-id", "memory",
+                                    "--dir", str(out), "--force")[0], 0)
+            code, _ = run_qa("init", "--project", "p", "--run-id", "r1", "--task-id", "workspace",
+                             "--dir", str(out), "--force")
+            self.assertNotEqual(code, 0)
+            self.assertEqual(qa.load_json(run_path)["task_id"], "memory")
+
 
 class TestParseCsv(unittest.TestCase):
     def test_utf8_sig_utf8_gb18030_and_blank_rows(self):
