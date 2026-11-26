@@ -271,10 +271,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
 
+class DashboardServer(ThreadingHTTPServer):
+    allow_reuse_address = False
+
+
 def find_free_port(start: int, tries: int = 50):
     for port in range(start, start + tries):
         try:
-            server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
+            server = DashboardServer(("127.0.0.1", port), DashboardHandler)
             return server, port
         except OSError:
             continue

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import socket
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,18 @@ from test_qa import acceptance_run, observation, run_qa
 
 
 class TestDashboard(unittest.TestCase):
+    def test_free_port_skips_occupied_port(self):
+        with socket.socket() as occupied:
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            server, selected = dashboard.find_free_port(port, tries=20)
+            try:
+                self.assertNotEqual(port, selected)
+            finally:
+                server.server_close()
+
     def test_build_html_from_run(self):
         with tempfile.TemporaryDirectory() as td:
             run = acceptance_run(Path(td))
