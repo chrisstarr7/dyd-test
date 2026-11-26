@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import socket
+import shutil
 import sys
 import tempfile
 import unittest
@@ -56,6 +57,48 @@ class TestDashboard(unittest.TestCase):
             self.assertIn("暂无用例记录", html)
             self.assertIn("无数据", html)
             self.assertNotIn("100.00%", html)
+
+    def test_collection_dashboard_combines_task_runs_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = acceptance_run(Path(directory))
+            self.assertEqual(run_qa("record", "--dir", str(first), "--case", "TC-001",
+                                    "--state", "passed", "--result", observation(first))[0], 0)
+            second = first.parent / "r2"
+            shutil.copytree(first, second)
+            run = qa.load_json(second / "run.json")
+            run["run_id"] = "r2"
+            qa.dump_json(second / "run.json", run)
+            self.assertEqual(run_qa("record", "--dir", str(second), "--case", "TC-001",
+                                    "--state", "failed", "--result", observation(second, actual=False),
+                                    "--note", "断言失败", "--defect", "BUG-001")[0], 0)
+
+            html = dashboard.build_collection_html([first, second])
+            self.assertIn("测试任务看板", html)
+            self.assertIn("2 个运行 · 1 个看板", html)
+            self.assertIn("测试未完成", html)
+            self.assertIn("r1", html)
+            self.assertIn("r2", html)
+            self.assertIn("正式发布准入：待确认（含旧版运行）", html)
+            self.assertIn('id="run-1-report-chapter-1"', html)
+            self.assertIn('id="run-2-report-chapter-1"', html)
+
+    def test_task_outcome_uses_most_severe_run(self):
+        review = lambda outcome: {"gate": {"test_outcome": outcome}}
+        self.assertEqual(dashboard.task_outcome([review("passed"), review("incomplete")]), "incomplete")
+        self.assertEqual(dashboard.task_outcome([review("passed"), review("incomplete"), review("failed")]), "failed")
+        self.assertEqual(dashboard.task_outcome([review("passed"), review("passed")]), "passed")
+
+    def test_collection_dashboard_rejects_different_test_scopes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = acceptance_run(Path(directory))
+            second = first.parent / "r2"
+            shutil.copytree(first, second)
+            run = qa.load_json(second / "run.json")
+            run["run_id"] = "r2"
+            run["url"] = "https://another.example.test/"
+            qa.dump_json(second / "run.json", run)
+            with self.assertRaisesRegex(ValueError, "同一项目、同一测试地址"):
+                dashboard.build_collection_html([first, second])
 
     def test_dashboard_and_report_reject_stale_gate(self):
         with tempfile.TemporaryDirectory() as directory:

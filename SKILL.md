@@ -126,13 +126,15 @@ P0/P1 未闭环、P2 未让步接收、数据核对缺失、PASS 无证据、环
 
 ## 测试结果看板
 
-全部阶段完成且 `report` 已生成后，启动本地看板（后台运行并自动打开浏览器）：
+全部阶段完成且各运行 `report` 已生成后，启动本地看板（后台运行并自动打开浏览器）。
+同一测试任务的主运行、补测和重复运行必须放进同一个看板，只启动一次；只有不同测试需求才分别启动看板：
 
-- Windows：`Start-Process -WindowStyle Hidden python -ArgumentList 'scripts/dashboard.py','--dir','<run>'`
-- macOS：`nohup python3 scripts/dashboard.py --dir <run> >/dev/null 2>&1 &`
+- Windows：`Start-Process -WindowStyle Hidden python -ArgumentList @('scripts/dashboard.py','--dir','<run-1>','--dir','<run-2>')`
+- macOS：`nohup python3 scripts/dashboard.py --dir <run-1> --dir <run-2> >/dev/null 2>&1 &`
 
-看板从运行原始记录重新核验门禁并生成 `dashboard.html`，页面底部可展开报告原文。
-本地服务只监听 127.0.0.1（默认 8899，占用时自动递增），仅提供看板页。
+只有一个运行时省略第二个 `--dir`。聚合看板按项目与测试地址校验范围，整体结论取最严重运行结果，
+各运行统计不跨运行相加；运行明细内可展开对应报告原文。看板从原始记录重新核验门禁，并将聚合页写入首个运行的
+`dashboard.html`。本地服务只监听 127.0.0.1（默认 8899，占用时自动递增），同一任务不得重复启动端口。
 
 ## 断点恢复
 

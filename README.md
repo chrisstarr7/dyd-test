@@ -130,10 +130,13 @@ python -B tests/seed_account_benchmark.py
 
 全部阶段完成并生成报告后，Skill 会在本地启动结果看板并自动打开浏览器。后台启动命令：
 
-- Windows：`Start-Process -WindowStyle Hidden python -ArgumentList 'scripts/dashboard.py','--dir','<run>'`
-- macOS：`nohup python3 scripts/dashboard.py --dir <run> >/dev/null 2>&1 &`
+- Windows：`Start-Process -WindowStyle Hidden python -ArgumentList @('scripts/dashboard.py','--dir','<run-1>','--dir','<run-2>')`
+- macOS：`nohup python3 scripts/dashboard.py --dir <run-1> --dir <run-2> >/dev/null 2>&1 &`
 
-展开看板底部的「报告原文」即可通过目录查看验收点和断言证据。`dashboard.html` 可离线打开。本地服务只监听 `127.0.0.1`（默认端口 `8899`，占用时自动递增），仅提供看板页。
+同一测试任务的补测和重复运行使用多个 `--dir` 合并为一个看板、一个端口；只有一个运行时可省略第二个参数。
+聚合页按项目与测试地址校验范围，整体结论取最严重运行结果，各运行统计不跨运行相加。每个运行内的「报告原文」
+可展开查看验收点和断言证据。`dashboard.html` 可离线打开。本地服务只监听 `127.0.0.1`（默认端口 `8899`，
+占用时自动递增）；不同测试需求分别启动看板，同一任务不得重复打开多个端口。
 
 ## 安全与能力边界
 
