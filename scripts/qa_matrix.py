@@ -260,7 +260,10 @@ def review(directory, run, case):
                     errors.append(f"查询 {query_id} 第 {row.get('repeat', '?')} 次缺少召回分层证据")
                 else:
                     recall_evidence_valid = True
-                    if row["search_invoked"] is not True:
+                    requires_positive = any(
+                        (_bounds(rule)[0] or 0) > 0 for rule in query["expect"].values()
+                    )
+                    if row["search_invoked"] is not True and requires_positive:
                         row_layers.add("decision")
                     for name, rule in query["expect"].items():
                         low, _ = _bounds(rule)
@@ -291,7 +294,11 @@ def review(directory, run, case):
                 continue
             layers.update(row_layers)
             all_layers.update(row_layers)
-            labels = "、".join(LAYER_LABELS[layer] for layer in row_layers)
+            labels = "、".join(
+                LAYER_LABELS[layer] for layer in
+                ("decision", "retrieval", "injection", "citation", "assertion")
+                if layer in row_layers
+            )
             detail = f"未命中 {key}" if not ok else "最终指标命中但证据层未通过"
             errors.append(f"查询 {query_id} 第 {row.get('repeat', '?')} 次 {detail}（{labels}）")
         if matched not in (0, len(rows)) or len(actuals) > 1:
@@ -306,6 +313,7 @@ def review(directory, run, case):
             "role": query.get("role"),
             "intent": query.get("factors", {}).get("intent"),
             "prompt_length": query.get("factors", {}).get("prompt_length"),
+            "trigger": query.get("factors", {}).get("trigger"),
             "matched": matched,
             "repeats": len(rows),
             "flaky": matched not in (0, len(rows)) or len(actuals) > 1,

@@ -193,6 +193,16 @@ class TestNondeterministicMatrix(unittest.TestCase):
     def test_recall_failure_layers_are_separated(self):
         decision = run_review(matrix_plan(), {("Q-001", 2): {"search_invoked": False}})
         self.assertTrue(any("检索决策层" in error for error in decision["errors"]))
+        ordered = run_review(matrix_plan(), {
+            ("Q-001", 2): {
+                "search_invoked": False,
+                "retrieved": {"project": 0, "personal": 2},
+                "injected": {"project": 0, "personal": 2},
+                "actual": {"project": 0},
+                "citation_delta": 0,
+            },
+        })
+        self.assertTrue(any("检索决策层、检索层" in error for error in ordered["errors"]))
 
         retrieval = run_review(matrix_plan(), {
             ("Q-001", 2): {
@@ -219,6 +229,12 @@ class TestNondeterministicMatrix(unittest.TestCase):
             ("Q-001", 2): {"citation_delta": 0},
         })
         self.assertTrue(any("引用计数层" in error for error in citation["errors"]))
+
+    def test_negative_zero_expectation_does_not_require_search(self):
+        result = run_review(matrix_plan(), {
+            ("Q-004", "all"): {"search_invoked": False},
+        })
+        self.assertTrue(result["passed"], result["errors"])
 
 
 if __name__ == "__main__":

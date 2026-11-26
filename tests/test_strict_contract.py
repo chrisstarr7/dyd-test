@@ -506,6 +506,8 @@ class TestStrictContract(unittest.TestCase):
         review = qa.assess(self.run)
         self.assertEqual(review["gate"]["test_outcome"], "failed")
         self.assertEqual(review["results"]["TC-001"]["observation"]["assertions"]["AC-001"]["actual"], "0.01")
+        self.assertEqual(review["stats"]["criterion_pass_rate"], 0.0)
+        self.assertNotIn("AC-001", review["passed_criteria"])
 
     def test_tool_block_is_reported_as_incomplete_not_product_failure(self):
         self.assertEqual(self.freeze(), 0)

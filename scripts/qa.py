@@ -680,7 +680,8 @@ def assess(directory):
                                                 for case_id in planned_by[key])}
     passed_criteria = {
         key for key in completed if all(
-            not results[case_id]["observation"].get("lifecycle_mismatch")
+            results[case_id]["state"] == "passed"
+            and not results[case_id]["observation"].get("lifecycle_mismatch")
             and results[case_id]["observation"].get("actor_verified", True)
             and results[case_id]["observation"].get("effect", {}).get("verified", True)
             and digest(cases[case_id]["expected"][key]) == digest(results[case_id]["observation"]["assertions"][key]["actual"])
@@ -810,9 +811,17 @@ def format_report(review):
             for item in matrix.get("items", []):
                 layers = "、".join(LAYER_LABELS.get(layer, layer) for layer in item.get("layers", []))
                 suffix = f" · 失败层 {layers}" if layers else ""
+                if item.get("role") == "negative":
+                    outcome = (f"未误命中 {item.get('matched')}/{item.get('repeats')}"
+                               if item.get("matched") == item.get("repeats")
+                               else f"误命中 {item.get('repeats', 0) - item.get('matched', 0)}/{item.get('repeats')}")
+                elif item.get("role") == "positive":
+                    outcome = f"命中 {item.get('matched')}/{item.get('repeats')}"
+                else:
+                    outcome = f"符合预期 {item.get('matched')}/{item.get('repeats')}"
                 lines.append(f"  - {item.get('id')} · {roles.get(item.get('role'), item.get('role'))}"
                              f" · {item.get('intent')} · {item.get('prompt_length')}"
-                             f" · 命中 {item.get('matched')}/{item.get('repeats')}{suffix}")
+                             f" · 触发 {item.get('trigger') or '未声明'} · {outcome}{suffix}")
             lines.extend(f"  - 阻断：{error}" for error in matrix.get("errors", []))
     lines += ["", "## PRD 验收点"]
     for key, (req_id, criterion) in review["criteria"].items():
@@ -831,6 +840,8 @@ def format_report(review):
         layer = {"online_ui": "在线界面", "offline_ui": "隔离客户端"}.get(observation.get("layer"))
         suffix = f" · {layer}" if layer else ""
         lines.append(f"- {case_id} · {case['page']} · {observation['role']} · {observation['url']}{suffix}")
+        if (observation.get("matrix") or {}).get("passed") is False:
+            lines.append("  - 矩阵门禁未通过；单项页面检查通过不代表召回结论通过")
         if observation.get("baseline_evidence"):
             lines.append(f"  - 写入前基线 {observation['baseline_evidence']}")
         if "actor_verified" in observation:

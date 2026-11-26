@@ -56,6 +56,8 @@ description: >
 `test_kind`（`recall | ranking | search | generative`）并冻结 `matrix`：
 
 - 固定账号身份、租户、项目、版本、入口、数据状态和索引是否预热。
+- 先核对产品的召回/检索触发条件；抽取触发不等于生成前召回触发。未进入目标阶段的
+  澄清、闲聊、能力边界拒绝不得算召回失败；负向对照须是规则上不应触发检索的请求。
 - 至少 2 次重复，至少 3 种业务意图，覆盖 short/medium/long，并有正负对照。
 - 对照项只能改变一个因子；short/long 长度对照必须同意图、同负载、同主题。
 - 召回必须分开记录 `search_invoked`、`retrieved`、`injected`、`dropped`、
