@@ -3,6 +3,8 @@ import hashlib
 import json
 import re
 
+import qa_api
+
 from qa_browser import LAYERS, browser_page, browser_probe, redact_data, redacted_measurement
 from qa_contract import check_plan, digest, evidence_file, index_objects, text
 from qa_matrix import validate_plan
@@ -220,11 +222,31 @@ def plan_fingerprint(directory, run, requirements, cases, pages):
 
     coverage = {key: set() for key in criteria}
     for page in pages.values():
-        browser_page(page)
+        if page.get("layer") == "api":
+            qa_api.validate_target(run, page)
+        else:
+            browser_page(page)
+    api_signatures = set()
     for case in planned.values():
         rules = case.get("checks")
         scenario = case.get("scenario")
         layer = case.get("layer", "online_ui")
+        if (case.get("matrix") or {}).get("recall_evidence") == "display" and (
+                case.get("recall_url") != (pages.get(case.get("page")) or {}).get("url") or layer != "online_ui"):
+            raise ValueError(f"用例 {case['id']} 的召回展示证据必须匹配已登记在线页面")
+        if layer == "api":
+            if case["page"] not in pages or scenario not in SCENARIOS:
+                raise ValueError(f"用例 {case['id']} 缺少 API 入口或场景")
+            qa_api.validate_case(run, case, pages[case["page"]])
+            signature = digest([case["page"], case["http"], rules, case["expected"], case.get("depends_on", [])])
+            if signature in api_signatures:
+                raise ValueError(f"API 用例 {case['id']} 重复已有请求和判据")
+            api_signatures.add(signature)
+            for key in rules:
+                if criteria[key][1].get("layer") != layer:
+                    raise ValueError(f"用例 {case['id']} 和 {key} 的执行层不一致")
+                coverage[key].add(scenario)
+            continue
         if (case["page"] not in pages or scenario not in SCENARIOS or layer not in LAYERS
                 or ("result_ready" in case and not text(case["result_ready"]))
                 or ("verify_reload" in case and type(case["verify_reload"]) is not bool)
@@ -289,6 +311,14 @@ def plan_fingerprint(directory, run, requirements, cases, pages):
             raise ValueError(f"{key} 高风险仅覆盖单一场景，须说明依据")
     frozen = [run.get("run_id"), run.get("mode"), run.get("version"), run.get("url"),
               scope, source.read_text(encoding="utf-8-sig"), requirements, cases, pages]
+    if "project_id" in run:
+        if not isinstance(run["project_id"], str) or not re.fullmatch(r"[a-f0-9]{32}", run["project_id"]):
+            raise ValueError("冻结计划中的稳定项目 ID 无效")
+        frozen.append(run["project_id"])
+    for case in planned.values():
+        probability = (case.get("matrix") or {}).get("probability")
+        if probability:
+            frozen.append(hashlib.sha256(evidence_file(directory, probability["label_file"]).read_bytes()).hexdigest())
     issues, risk = review_risks(directory, run, planned, None)
     if issues:
         raise ValueError("；".join(issues))

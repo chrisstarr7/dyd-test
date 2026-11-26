@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from qa_contract import evidence_file, text, url_key
+from qa_contract import digest, evidence_file, text, url_key
 
 
 RELEASE_COMPONENTS = {
@@ -86,6 +86,22 @@ def _accepted_waiver(directory, waiver, defect_id, version):
             and record.get("reason") == waiver["reason"])
 
 
+def root_cause_proof(directory, run, defect, reference):
+    """复核授权责任方提交的因果证据。通过回归仍由缺陷闭环独立核验。"""
+    path = evidence_file(directory, reference)
+    record = _read_record(path, "root_cause_confirmation")
+    if (record.get("run_id") != run.get("run_id") or record.get("version") != run.get("version")
+            or record.get("defect_id") != defect["id"] or record.get("retest_case") != defect.get("retest_case_id")
+            or record.get("method") not in ("controlled_reproduction", "fix_causal")
+            or not all(_confirmed(record.get(key)) for key in ("by", "reference", "finding"))):
+        raise ValueError("根因记录未关联本轮缺陷和已确认的因果依据")
+    artifact = evidence_file(directory, record.get("evidence"))
+    if artifact.samefile(path):
+        raise ValueError("根因确认需要独立证据附件")
+    return {"reference": path.relative_to(directory.resolve()).as_posix(),
+            "sha256": digest([record, digest(artifact.read_bytes().hex())])}
+
+
 def review_defects(directory, run, defects, results) -> list[str]:
     """以调用方已核验的最新执行记录检查缺陷闭环，返回阻塞原因。"""
     if not isinstance(run, dict) or not isinstance(defects, list) or not isinstance(results, dict):
@@ -115,6 +131,14 @@ def review_defects(directory, run, defects, results) -> list[str]:
             linked = retest.get("defect_ids") if isinstance(retest, dict) else None
             if not isinstance(linked, list) or defect_id not in linked or retest.get("state") != "passed":
                 problems.append(f"缺陷关闭缺少关联的通过复测：{defect_id}")
+            investigation = defect.get("investigation")
+            if isinstance(investigation, dict) and investigation.get("root_cause") == "confirmed":
+                try:
+                    proof = investigation.get("proof", {})
+                    if proof != root_cause_proof(directory, run, defect, proof.get("reference")):
+                        raise ValueError
+                except (OSError, ValueError, TypeError, AttributeError):
+                    problems.append(f"根因确认凭据无法核验：{defect_id}")
         elif severity in ("P0", "P1"):
             problems.append(f"P0/P1 缺陷未闭环：{defect_id}")
         elif severity == "P2" and not _accepted_waiver(directory, defect.get("waiver"), defect_id, version):

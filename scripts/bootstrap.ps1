@@ -1,4 +1,5 @@
-# Bootstrap agent-browser for dyd-test. Idempotent; safe to rerun.
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version)
+
 $ErrorActionPreference = "Stop"
 
 function Get-InstalledVersion {
@@ -10,27 +11,15 @@ function Get-InstalledVersion {
     return $null
 }
 
-function Get-LatestVersion {
-    try {
-        return (& npm view agent-browser version 2>$null | Select-Object -First 1).Trim()
-    }
-    catch { }
-    return $null
-}
-
 $installed = Get-InstalledVersion
-$latest = Get-LatestVersion
+$targetVersion = if ($Version) { $Version } elseif ($installed) { $installed } else { '0.44.0' }
 
-if (-not $installed) {
-    Write-Host "agent-browser not found; installing latest ..."
-    npm i -g agent-browser@latest
-}
-elseif ($latest -and ($installed -ne $latest)) {
-    Write-Host "agent-browser update available: $installed -> $latest; updating ..."
-    npm i -g agent-browser@latest
+if ($installed -ne $targetVersion) {
+    npm i -g "agent-browser@$targetVersion"
+    if ($LASTEXITCODE -ne 0) { throw "agent-browser installation failed." }
 }
 else {
-    Write-Host "agent-browser $installed is current."
+    Write-Host "Using installed agent-browser $installed."
 }
 
 $npmPrefix = & npm prefix -g
@@ -38,11 +27,12 @@ if ($npmPrefix -and (-not ($env:Path -split ';' -contains $npmPrefix))) {
     $env:Path = "$npmPrefix;$env:Path"
 }
 
-if (-not (Get-InstalledVersion)) {
+if ((Get-InstalledVersion) -ne $targetVersion) {
     throw "agent-browser still not available after install. Check npm global bin is on PATH."
 }
 
 Write-Host "Installing browser runtime ..."
 & agent-browser install
+if ($LASTEXITCODE -ne 0) { throw "Browser runtime installation failed." }
 
 Write-Host "agent-browser ready: $(& agent-browser --version)"

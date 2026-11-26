@@ -244,8 +244,8 @@ def verify_identity(directory, run, page, case, fixture, path, measured):
         raise ValueError("登录主体、租户、会话或页面文档已变化，需重新核验角色")
 
 
-def validate_capture(directory, run, page, path, *, phases, case=None, fixture=None):
-    browser_page(page)
+def registered_capture(directory, path):
+    """读取采集器登记的本轮文件，复核路径和原始内容。"""
     file, data = read_capture(directory, path)
     capture_id = data.get("capture_id")
     if not text(capture_id) or not re.fullmatch(r"[a-f0-9]{32}", capture_id):
@@ -256,6 +256,12 @@ def validate_capture(directory, run, page, path, *, phases, case=None, fixture=N
         raise ValueError("证据没有有效采集登记") from error
     if registered != [file.relative_to(directory.resolve()).as_posix(), digest(data)]:
         raise ValueError("采集证据内容或路径已变更")
+    return file, data
+
+
+def validate_capture(directory, run, page, path, *, phases, case=None, fixture=None):
+    browser_page(page)
+    file, data = registered_capture(directory, path)
     page_origin = url_key(page["url"])
     run_origin = url_key(run.get("url"))
     layer = (case or fixture or {}).get("layer", "online_ui")
@@ -327,6 +333,8 @@ def result_from_capture(directory, run, case, page, criteria, path, fixture=None
     observation = {key: observed[key] for key in ("url", "role", "tenant")}
     observation.update(capture=relative, layer=case.get("layer", "online_ui"),
                        assertions={key: {"actual": value, "evidence": relative} for key, value in actual.items()})
+    if text(observed.get("tool")):
+        observation["tool"] = observed["tool"]
     for key, rule in checks.items():
         if rule.get("read") == "navigation_ms":
             observation["assertions"][key].update(raw_ms=current[key], max_ms=rule["max_ms"])
@@ -352,6 +360,10 @@ def collect(session, page, checks, fixture, timeout, online, ready, allow_missin
     executable = shutil.which("agent-browser")
     if not executable:
         raise ValueError("找不到 agent-browser，先初始化浏览器运行时")
+    version = subprocess.run([executable, "--version"], capture_output=True, encoding="utf-8", timeout=5)
+    tool = version.stdout.strip().splitlines()
+    if version.returncode or len(tool) != 1 or not re.fullmatch(r"agent-browser [A-Za-z0-9.+-]+", tool[0]):
+        raise ValueError("无法确认浏览器采集工具版本")
     payload = json.dumps({"page": page, "checks": checks, "fixture": fixture, "resultReady": ready,
                           "allowMissingRole": allow_missing_role}, ensure_ascii=True)
     script = f"({PROBE})({payload})"
@@ -364,6 +376,7 @@ def collect(session, page, checks, fixture, timeout, online, ready, allow_missin
             result = json.loads(reply.stdout)["data"]["result"]
             if (isinstance(result, dict) and url_key(result.get("url")) == url_key(page["url"])
                     and result.get("online") is online):
+                result["tool"] = tool[0]
                 return result
         except (KeyError, TypeError, ValueError):
             pass

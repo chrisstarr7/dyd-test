@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import copy
+import hashlib
 import json
 import sys
 import tempfile
@@ -11,6 +12,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import qa_matrix  # noqa: E402
+from qa_browser import write_capture
 
 
 URL = "https://example.test/project/P-001"
@@ -88,23 +90,104 @@ def run_review(plan, changes=None):
     root = Path(folder.name)
     (root / "evidence").mkdir()
     rows = []
+    probability = plan["matrix"].get("probability")
+    display = plan["matrix"].get("recall_evidence") == "display"
+    if probability:
+        label = b"independent labels"
+        (root / probability["label_file"]).write_bytes(label)
     for query in plan["matrix"]["queries"]:
-        for repeat in (1, 2):
+        for repeat in range(1, plan["matrix"]["repeats"] + 1):
             row = default_row(query, repeat)
+            if probability:
+                row.update(sample_id=f"{query['id']}/{repeat}", grade_status="scored",
+                           **{key: probability[key] for key in ("grader", "rubric", "labels")})
+                row["actual"].update(schema_valid=True, tenant_match=True, phrasing=repeat)
             row.update(changes.get((query["id"], repeat), {}))
             row.update(changes.get((query["id"], "all"), {}))
             rows.append(row)
-            (root / row["evidence"]).write_text("{}", encoding="utf-8")
+            grade = {}
+            if probability:
+                sample_file = f"evidence/raw-{query['id']}-{repeat}.json"
+                raw = json.dumps({"observation": f"independent sample {repeat}", "run_id": "EVAL-1",
+                                  "sample_id": row["sample_id"], "query_id": query["id"], "source": "fixture",
+                                  "execution_id": row.get("test_execution_id", row["sample_id"])}).encode()
+                (root / sample_file).write_bytes(raw)
+                grade = {"sample_id": row["sample_id"], "run_id": "EVAL-1", "case_id": plan["id"],
+                         "query_id": query["id"], "grader": probability["grader"], "rubric": probability["rubric"],
+                         "labels_sha256": hashlib.sha256(label).hexdigest(),
+                         "measurement_sha256": qa_matrix.digest(row["actual"]),
+                         "artifact": sample_file, "artifact_sha256": hashlib.sha256(raw).hexdigest()}
+            if display:
+                write_capture(root, root / row["evidence"], {
+                    "source": "agent-browser", "run_id": "EVAL-1", "version": "BUILD-1", "case_id": plan["id"],
+                    "url": plan["recall_url"], "execution_id": row.get("test_execution_id", row["evidence"]),
+                    **{key: row[key] for key in ("query_id", "repeat", "observed_at", "actual", "search_invoked")},
+                })
+            else:
+                (root / row["evidence"]).write_text(json.dumps(grade), encoding="utf-8")
     data = {"case_id": plan["id"], "environment": plan["matrix"]["environment"], "queries": rows}
     (root / "evidence" / "matrix.json").write_text(
         json.dumps(data, ensure_ascii=False), encoding="utf-8"
     )
-    result = qa_matrix.review(root, {"url": URL, "version": "BUILD-1"}, plan)
-    folder.cleanup()
-    return result
+    try:
+        return qa_matrix.review(root, {"url": URL, "version": "BUILD-1", "run_id": "EVAL-1"}, plan)
+    finally:
+        folder.cleanup()
 
 
 class TestNondeterministicMatrix(unittest.TestCase):
+    def test_trigger_matrix_distinguishes_zero_hits_and_no_search(self):
+        plan = matrix_plan()
+        plan["recall_url"] = URL
+        matrix = plan["matrix"]
+        positive, _, _, negative = matrix["queries"]
+        positive["search_expected"], negative["search_expected"] = True, False
+        positive.pop("citation_min")
+        matrix.update(objective="trigger", recall_evidence="display", queries=[positive, negative], comparisons=[])
+        good = {("Q-004", repeat): {"search_invoked": False} for repeat in (1, 2)}
+        result = run_review(plan, good)
+        self.assertTrue(result["passed"], result["errors"])
+        self.assertIn("后台检索、注入未验证", result["summary"]["evidence_scope"])
+        bad = dict(good)
+        bad[("Q-004", 2)] = {"search_invoked": True}
+        self.assertFalse(run_review(plan, bad)["passed"])
+        bad[("Q-004", 2)] = {"search_invoked": None}
+        with self.assertRaisesRegex(ValueError, "触发信号"):
+            run_review(plan, bad)
+        bad[("Q-004", 2)] = {"search_invoked": False, "test_execution_id": "evidence/Q-004-1.json"}
+        with self.assertRaisesRegex(ValueError, "独立对话"):
+            run_review(plan, bad)
+
+    def probability_plan(self):
+        plan = matrix_plan()
+        plan["matrix"].update(repeats=10, probability={
+            "min_samples": 10, "min_lower_bound": 0.5, "grader": "fixture-grader",
+            "rubric": "contract-v1", "labels": "independent-v1", "label_file": "evidence/labels.txt",
+        })
+        for query in plan["matrix"]["queries"]:
+            query["hard_expect"] = {"schema_valid": True, "tenant_match": True}
+        return plan
+
+    def test_probability_accepts_variation_but_not_independent_hard_violations(self):
+        plan = self.probability_plan()
+        one_miss = {"project": 0, "schema_valid": True, "tenant_match": True}
+        data = {("Q-001", 1): {"actual": one_miss, "retrieved": {"project": 0}, "injected": {"project": 0}}}
+        result = run_review(plan, data)
+        self.assertTrue(result["passed"], result["errors"])
+        self.assertFalse(result["summary"]["flaky"])
+        self.assertEqual(result["summary"]["items"][0]["matched"], 9)
+        one_miss["tenant_match"] = False
+        self.assertTrue(any("违反硬约束" in error for error in run_review(plan, data)["errors"]))
+
+    def test_probability_unavailable_grader_and_small_sample_do_not_pass(self):
+        plan = self.probability_plan()
+        with self.assertRaisesRegex(ValueError, "有效评分"):
+            run_review(plan, {("Q-001", 2): {"grade_status": "unavailable"}})
+        with self.assertRaisesRegex(ValueError, "独立原始执行标识"):
+            run_review(plan, {("Q-001", 2): {"test_execution_id": "Q-001/1"}})
+        plan["matrix"]["probability"]["min_lower_bound"] = 0.99
+        self.assertFalse(run_review(plan)["passed"])
+
     def test_plan_rejects_single_sample_and_missing_controls(self):
         plan = matrix_plan()
         plan.pop("matrix")

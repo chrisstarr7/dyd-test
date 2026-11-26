@@ -7,21 +7,21 @@ installed() {
     fi
 }
 
-latest() {
-    npm view agent-browser version 2>/dev/null
-}
-
 cur="$(installed)"
-new="$(latest)"
+desired=
+if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 1 ] || ! printf '%s\n' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "Usage: $0 [agent-browser-version]" >&2
+        exit 2
+    fi
+    desired="$1"
+fi
+desired="${desired:-${cur:-0.44.0}}"
 
-if [ -z "$cur" ]; then
-    echo "agent-browser not found; installing latest ..."
-    npm i -g agent-browser@latest
-elif [ -n "$new" ] && [ "$cur" != "$new" ]; then
-    echo "agent-browser update available: $cur -> $new; updating ..."
-    npm i -g agent-browser@latest
+if [ "$cur" != "$desired" ]; then
+    npm i -g "agent-browser@$desired"
 else
-    echo "agent-browser $cur is current."
+    echo "Using installed agent-browser $cur."
 fi
 
 NPM_BIN="$(npm prefix -g)/bin"
@@ -30,7 +30,7 @@ case ":$PATH:" in
     *) PATH="$NPM_BIN:$PATH";;
 esac
 
-if ! command -v agent-browser >/dev/null 2>&1; then
+if [ "$(installed)" != "$desired" ]; then
     echo "agent-browser still not available after install. Check npm global bin is on PATH." >&2
     exit 1
 fi

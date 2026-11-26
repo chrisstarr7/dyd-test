@@ -90,6 +90,28 @@ class TestReleaseGate(unittest.TestCase):
         defect["status"] = "closed"
         self.assertEqual(review_defects(self.directory, self.run, [defect], results), [])
 
+    def test_confirmed_root_cause_needs_independent_causal_proof(self):
+        from qa_release import root_cause_proof
+
+        run = {**self.run, "run_id": "R1"}
+        defect = {"id": "BUG-001", "severity": "P1", "status": "closed", "fix_version": "v1",
+                  "retest_case_id": "TC-001"}
+        results = {"TC-001": {"state": "passed", "defect_ids": ["BUG-001"]}}
+        proof = {"type": "root_cause_confirmation", "source": "授权工程师复核", "by": "reviewer",
+                 "reference": "diagnostic-record-1", "finding": "条件对照 isolating a business change",
+                 "run_id": "R1", "version": "v1", "defect_id": "BUG-001", "retest_case": "TC-001",
+                 "method": "fix_causal", "evidence": "causal.txt"}
+        self.write_record("root.json", proof)
+        with self.assertRaises(ValueError):
+            root_cause_proof(self.directory, run, defect, "root.json")
+        artifact = self.directory / "causal.txt"
+        artifact.write_text("独立因果比对证据样例", encoding="utf-8")
+        defect["investigation"] = {"root_cause": "confirmed",
+                                   "proof": root_cause_proof(self.directory, run, defect, "root.json")}
+        self.assertEqual(review_defects(self.directory, run, [defect], results), [])
+        artifact.write_text("证据已更改", encoding="utf-8")
+        self.assertIn("根因确认凭据无法核验：BUG-001", review_defects(self.directory, run, [defect], results))
+
     def test_p2_waiver_requires_structured_approval_for_same_defect_and_version(self):
         waiver = {"version": "v1", "by": "产品负责人", "reason": "已接受筛选项延后修复",
                   "reference": "waiver.json"}

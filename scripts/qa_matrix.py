@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 
+from qa_browser import registered_capture
 from qa_contract import digest, evidence_file, text, url_key
 
 
@@ -61,7 +63,7 @@ def _matches(expected, actual):
         if not isinstance(actual, dict) or key not in actual:
             return False, key
         value = actual[key]
-        if type(value) is int:
+        if type(value) is int and (type(rule) is int or _bounds(rule) != (None, None)):
             low, high = _bounds(rule)
             if low is not None and value < low:
                 return False, key
@@ -70,6 +72,14 @@ def _matches(expected, actual):
         elif digest(rule) != digest(value):
             return False, key
     return True, ""
+
+
+def lower_bound(hits, count):
+    """单侧 95% Wilson 下界，独立采样的阈值判断。"""
+    rate, z = hits / count, 1.6448536269514722
+    weight = z * z / count
+    return max(0.0, (rate + weight / 2 - z * math.sqrt(
+        (rate * (1 - rate) + weight / 4) / count)) / (1 + weight))
 
 
 def validate_plan(case):
@@ -93,6 +103,22 @@ def validate_plan(case):
     repeats = matrix.get("repeats")
     if type(repeats) is not int or repeats < 2:
         errors.append(f"非确定用例 {case_id} 单次样本不能判定，repeats 至少为 2")
+    probability = matrix.get("probability")
+    trigger_only = matrix.get("objective") == "trigger"
+    display_only = matrix.get("recall_evidence") == "display"
+    if ((trigger_only or display_only) and kind != "recall") or (display_only and probability):
+        errors.append(f"非确定用例 {case_id} 的触发专项或展示证据与用例类型不一致")
+    if display_only and not url_key(case.get("recall_url")):
+        errors.append(f"非确定用例 {case_id} 缺少展示取证页面地址")
+    if "probability" in matrix and (
+        not isinstance(probability, dict)
+        or type(probability.get("min_samples")) is not int
+        or type(repeats) is not int or not 3 <= probability["min_samples"] <= repeats <= 200
+        or type(probability.get("min_lower_bound")) not in (int, float)
+        or not 0 < probability["min_lower_bound"] < 1
+        or not all(text(probability.get(key)) for key in ("grader", "rubric", "labels", "label_file"))
+    ):
+        errors.append(f"非确定用例 {case_id} 须冻结评分来源、标注、最低样本和区间下界阈值")
     environment = matrix.get("environment")
     if (not isinstance(environment, dict)
             or any(not text(environment.get(field)) for field in ENVIRONMENT_FIELDS)
@@ -125,9 +151,15 @@ def validate_plan(case):
         expected = item.get("expect")
         if not isinstance(expected, dict) or not expected:
             errors.append(f"查询 {query_id} 缺少可核验的期望指标")
+        if trigger_only and type(item.get("search_expected")) is not bool:
+            errors.append(f"查询 {query_id} 须冻结检索是否触发")
+        if probability and (not isinstance(item.get("hard_expect"), dict) or not item["hard_expect"]):
+            errors.append(f"查询 {query_id} 缺少独立硬约束")
         citation_min = item.get("citation_min")
         if citation_min is not None and (type(citation_min) is not int or citation_min < 0):
             errors.append(f"查询 {query_id} 的 citation_min 必须是非负整数")
+        if display_only and citation_min is not None:
+            errors.append(f"查询 {query_id} 的展示矩阵不能代替引用计数变化核对")
     controls = matrix.get("controls")
     if not isinstance(controls, dict):
         errors.append(f"非确定用例 {case_id} 缺少正负对照")
@@ -145,24 +177,27 @@ def validate_plan(case):
                 errors.append(f"{role} 对照未登记：{query_id}")
             elif indexed[query_id].get("role") != role:
                 errors.append(f"{role} 对照 {query_id} 的 role 不一致")
+            elif trigger_only and indexed[query_id].get("search_expected") is not (role == "positive"):
+                errors.append(f"{role} 对照 {query_id} 的检索触发预期不一致")
     for query_id in positive if isinstance(positive, list) else []:
         query = indexed.get(query_id)
-        if query and not any(_positive_expectation(value) for value in query.get("expect", {}).values()):
+        if query and not any(_positive_expectation(value) for value in (query.get("expect") or {}).values()):
             errors.append(f"正向对照 {query_id} 没有要求命中的指标")
     for query_id in negative if isinstance(negative, list) else []:
         query = indexed.get(query_id)
-        if query and not all(_zero_expectation(value) for value in query.get("expect", {}).values()):
+        if query and not all(_zero_expectation(value) for value in (query.get("expect") or {}).values()):
             errors.append(f"负向对照 {query_id} 必须期望零命中")
     intents = {item.get("factors", {}).get("intent") for item in indexed.values()
                if isinstance(item.get("factors"), dict)}
-    if len(intents) < 3:
-        errors.append(f"非确定用例 {case_id} 至少覆盖 3 种业务意图")
+    min_intents = 2 if trigger_only else 3
+    if len(intents) < min_intents:
+        errors.append(f"非确定用例 {case_id} 至少覆盖 {min_intents} 种业务意图")
     lengths = {item.get("factors", {}).get("prompt_length") for item in indexed.values()
                if isinstance(item.get("factors"), dict)}
-    if not PROMPT_LENGTHS <= lengths:
+    if not trigger_only and not PROMPT_LENGTHS <= lengths:
         errors.append(f"非确定用例 {case_id} 必须覆盖 short/medium/long 查询长度")
-    comparisons = matrix.get("comparisons")
-    if not isinstance(comparisons, list) or not comparisons:
+    comparisons = matrix.get("comparisons", [])
+    if not isinstance(comparisons, list) or (not trigger_only and not comparisons):
         errors.append(f"非确定用例 {case_id} 缺少单因子对照")
         comparisons = []
     has_length_pair = False
@@ -185,7 +220,7 @@ def validate_plan(case):
             continue
         if factor == "prompt_length" and {left[factor], right[factor]} == {"short", "long"}:
             has_length_pair = True
-    if not has_length_pair:
+    if not trigger_only and not has_length_pair:
         errors.append(f"非确定用例 {case_id} 缺少只改变长度的 short/long 对照")
     return errors
 
@@ -198,6 +233,9 @@ def review(directory, run, case):
     if before:
         return {"passed": False, "errors": before, "sha256": "", "summary": {"errors": before}}
     matrix = case["matrix"]
+    probability = matrix.get("probability")
+    display_only = matrix.get("recall_evidence") == "display"
+    label_digest = hashlib.sha256(evidence_file(directory, probability["label_file"]).read_bytes()).hexdigest() if probability else None
     path = evidence_file(directory, matrix["evidence"])
     data = json.loads(path.read_text(encoding="utf-8"))
     errors = []
@@ -218,11 +256,21 @@ def review(directory, run, case):
         raise ValueError("矩阵证据缺少 queries 观测列表")
     grouped = {}
     row_paths = set()
+    samples = set()
+    artifacts = set()
+    executions = set()
     for item in observations:
         if not isinstance(item, dict) or item.get("query_id") not in planned:
             errors.append("矩阵证据包含未登记的查询")
             continue
         grouped.setdefault(item["query_id"], []).append(item)
+        if probability:
+            sample = item.get("sample_id")
+            if (not text(sample) or sample in samples or item.get("grader") != probability["grader"]
+                    or item.get("rubric") != probability["rubric"] or item.get("labels") != probability["labels"]
+                    or item.get("grade_status") != "scored"):
+                raise ValueError("概率评估缺少独立样本、冻结标注或有效评分")
+            samples.add(sample)
     repeats = matrix["repeats"]
     items = []
     all_layers = set()
@@ -233,6 +281,8 @@ def review(directory, run, case):
         if (len(rows) != repeats
                 or not all(type(value) is int for value in seen)
                 or sorted(seen) != list(range(1, repeats + 1))):
+            if probability or display_only:
+                raise ValueError(f"查询 {query_id} 的样本未达到预先冻结的数量")
             errors.append(f"查询 {query_id} 未按 {repeats} 次完整重复")
         matched = 0
         actuals = set()
@@ -240,16 +290,61 @@ def review(directory, run, case):
         for row in sorted(rows, key=lambda value: value.get("repeat", 0)):
             if not text(row.get("observed_at")):
                 errors.append(f"查询 {query_id} 第 {row.get('repeat', '?')} 次缺少采样时间")
-            row_paths.add(evidence_file(directory, row.get("evidence")))
+            row_path = evidence_file(directory, row.get("evidence"))
+            if (probability or display_only) and row_path in row_paths:
+                raise ValueError("样本重复引用同一证据")
+            row_paths.add(row_path)
             actual = row.get("actual")
             if not isinstance(actual, dict):
                 errors.append(f"查询 {query_id} 第 {row.get('repeat', '?')} 次缺少 actual")
                 continue
-            actuals.add(digest(actual))
+            if not display_only:
+                actuals.add(digest(actual))
+            if probability:
+                if any(key not in actual for key in (*query["hard_expect"], *query["expect"])):
+                    raise ValueError(f"查询 {query_id} 缺少硬约束或质量的实测项")
+                grade = json.loads(row_path.read_text(encoding="utf-8"))
+                if not isinstance(grade, dict) or any(grade.get(key) != value for key, value in {
+                    "sample_id": row["sample_id"], "run_id": run.get("run_id"), "case_id": case["id"],
+                    "query_id": query_id, "grader": probability["grader"], "rubric": probability["rubric"],
+                    "labels_sha256": label_digest, "measurement_sha256": digest(actual),
+                }.items()):
+                    raise ValueError(f"查询 {query_id} 的原始证据、标注与评分未关联")
+                artifact = evidence_file(directory, grade.get("artifact"))
+                if (artifact in artifacts or artifact == row_path or artifact == path
+                        or grade.get("artifact_sha256") != hashlib.sha256(artifact.read_bytes()).hexdigest()):
+                    raise ValueError(f"查询 {query_id} 的原始样本缺失、重复或已修改")
+                raw = json.loads(artifact.read_text(encoding="utf-8"))
+                if (not isinstance(raw, dict) or raw.get("run_id") != run.get("run_id")
+                        or raw.get("sample_id") != row["sample_id"] or raw.get("query_id") != query_id
+                        or not text(raw.get("source")) or not text(raw.get("execution_id"))
+                        or not raw.get("observation")
+                        or raw["execution_id"] in executions):
+                    raise ValueError(f"查询 {query_id} 未提供独立原始执行标识")
+                artifacts.add(artifact)
+                executions.add(raw["execution_id"])
+                hard_ok, hard_key = _matches(query["hard_expect"], actual)
+                if not hard_ok:
+                    errors.append(f"查询 {query_id} 第 {row['repeat']} 次违反硬约束 {hard_key}")
             ok, key = _matches(query["expect"], actual)
             row_layers = set()
             recall_evidence_valid = False
-            if case["test_kind"] == "recall":
+            expected_search = query.get("search_expected")
+            if display_only:
+                _, receipt = registered_capture(directory, row["evidence"])
+                execution_id = receipt.get("execution_id")
+                if (not text(execution_id) or execution_id in executions
+                        or any(receipt.get(name) != value for name, value in {
+                            "source": "agent-browser", "run_id": run.get("run_id"), "version": run.get("version"),
+                            "case_id": case["id"], "query_id": query_id, "repeat": row["repeat"],
+                            "observed_at": row["observed_at"], "url": case.get("recall_url"),
+                            "actual": actual, "search_invoked": row.get("search_invoked"),
+                        }.items())
+                        or not url_key(receipt.get("url")) or url_key(receipt["url"])[:3] != url_key(run["url"])[:3]):
+                    raise ValueError(f"查询 {query_id} 的界面召回证据未关联到本轮独立对话")
+                executions.add(execution_id)
+                recall_evidence_valid = True
+            elif case["test_kind"] == "recall":
                 retrieved = row.get("retrieved")
                 injected = row.get("injected")
                 dropped = row.get("dropped")
@@ -285,6 +380,13 @@ def review(directory, run, case):
                     citation_min = query.get("citation_min")
                     if type(citation_min) is int and row["citation_delta"] < citation_min:
                         row_layers.add("citation")
+            if type(expected_search) is bool:
+                if type(row.get("search_invoked")) is not bool:
+                    raise ValueError(f"查询 {query_id} 缺少可判定的检索触发信号")
+                if row["search_invoked"] is not expected_search:
+                    row_layers.add("decision")
+                    if probability:
+                        errors.append(f"查询 {query_id} 第 {row['repeat']} 次违反检索触发规则")
             if not ok and not row_layers and (case["test_kind"] != "recall" or recall_evidence_valid):
                 row_layers.add("assertion")
             if ok and not row_layers and (case["test_kind"] != "recall" or recall_evidence_valid):
@@ -300,8 +402,16 @@ def review(directory, run, case):
                 if layer in row_layers
             )
             detail = f"未命中 {key}" if not ok else "最终指标命中但证据层未通过"
-            errors.append(f"查询 {query_id} 第 {row.get('repeat', '?')} 次 {detail}（{labels}）")
-        if matched not in (0, len(rows)) or len(actuals) > 1:
+            if not probability or query.get("role") == "negative":
+                errors.append(f"查询 {query_id} 第 {row.get('repeat', '?')} 次 {detail}（{labels}）")
+        varied = matched not in (0, len(rows)) or len(actuals) > 1
+        lower = lower_bound(matched, len(rows)) if probability else None
+        if probability and query.get("role") != "negative":
+            if len(rows) < probability["min_samples"]:
+                raise ValueError(f"查询 {query_id} 概率样本量不足")
+            if lower < probability["min_lower_bound"]:
+                errors.append(f"查询 {query_id} 的质量区间下界低于冻结阈值")
+        if not probability and varied:
             flaky = True
             errors.append(f"查询 {query_id} 的 {len(rows)} 次重复结果不稳定")
         if query.get("role") == "positive" and matched == 0:
@@ -316,9 +426,11 @@ def review(directory, run, case):
             "trigger": query.get("factors", {}).get("trigger"),
             "matched": matched,
             "repeats": len(rows),
-            "flaky": matched not in (0, len(rows)) or len(actuals) > 1,
+            "flaky": not probability and varied,
             "layers": sorted(layers),
         })
+        if probability:
+            items[-1].update(lower_bound=lower, min_lower_bound=probability["min_lower_bound"])
     summary = {
         "case_id": case.get("id"),
         "kind": case.get("test_kind"),
@@ -331,9 +443,11 @@ def review(directory, run, case):
         "items": items,
         "errors": errors,
     }
+    if display_only:
+        summary["evidence_scope"] = "界面展示与可见触发信号，后台检索、注入未验证"
     combined = hashlib.sha256(path.read_bytes())
     root = directory.resolve()
-    for row_path in sorted(row_paths, key=lambda value: value.relative_to(root).as_posix()):
+    for row_path in sorted(row_paths | artifacts, key=lambda value: value.relative_to(root).as_posix()):
         combined.update(row_path.relative_to(root).as_posix().encode("utf-8"))
         combined.update(row_path.read_bytes())
     return {

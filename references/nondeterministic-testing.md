@@ -25,6 +25,21 @@
 - 正向对照前先确认目标对象确实存在可召回数据，并记录对象、版本和数据状态。
 - 负向对照必须是“按产品规则不应触发检索”的请求，而不是“主题无关但仍会触发
   检索”的生成请求。
+
+只验触发差异时可声明 `matrix.objective: "trigger"`。至少安排触发和不触发两种意图、
+各重复至少两次，每条用例固定 `search_expected: true | false`。短长对照用于验证长度影响，
+与本轮规定的触发差异无关时可省略。零命中不能证明没有检索。
+
+只有浏览器页面时用 `matrix.recall_evidence: "display"`，用例声明与 `pages.json` 一致的
+`recall_url`。每个样本引用独立的已登记采集文件，绑定运行、构建、页面、查询、重复序号、
+采样时间、实际展示和实际执行标识。页面有明确检索状态时填 `search_invoked`。页面无信号时
+记录无法判定，避免填作 false。此模式不支持用 UI 数据替填检索、注入或引用计数证据。
+
+用已登录的浏览器读取本次消息实际展示，可复用 `qa_browser.write_capture` 登记脱敏
+JSON。文件至少包含 `source:"agent-browser"`、`run_id`、`version`、`case_id`、
+`query_id`、`repeat`、`observed_at`、`url`、`execution_id`、`actual` 和
+`search_invoked`。只出现“记忆召回”“思考中”等过程占位时继续等待，直到最终回复或
+明确终态可见。生成阶段未成立的样本可留作诊断，不因此判为生产功能失败。
 - 证据同时记录 `trigger_applicable`、`trigger_met`、`search_invoked` 和
   `retrieved`；未适用时结论写“不适用”，不写“未召回”。
 
@@ -175,6 +190,33 @@ Token 或 Cookie 写入矩阵。`principal_ref` 使用角色或不透明编号�
 一致，防止手工填写与上下文证据相互矛盾。
 
 ## 判定规则
+
+旧矩阵保持逐样本匹配。评估概率质量时，在冻结的 `matrix` 增加：
+
+```json
+{
+  "probability": {
+    "min_samples": 20,
+    "min_lower_bound": 0.75,
+    "grader": "human-or-independent-grader-id",
+    "rubric": "rubric-v1",
+    "labels": "held-out-labels-v1",
+    "label_file": "evidence/labels.json"
+  }
+}
+```
+
+`repeats` 至少等于 `min_samples`（示例参数须按项目实际预设）。每个查询另登记 `hard_expect`，
+例如 `{"schema_valid":true,"tenant_match":true}`；每条样本 `actual` 同时提供质量观测、硬约束值和所需召回分层记录。
+样本加唯一 `sample_id`、`grade_status:"scored"`、与计划一致的 `grader`、`rubric`、`labels` 及独立证据路径。
+逐样本 `evidence` 指向评分 JSON，包含 `sample_id`、`query_id`、`run_id`、`case_id`、`grader`、`rubric`、
+`labels_sha256`（冻结标注文件哈希）、`measurement_sha256`（用 `qa_contract.digest(actual)` 计算）、
+`artifact`（实际脱敏样本路径）和 `artifact_sha256`。重复引用同一样本、修改标注或样本原件会拒绝。
+原件为采集方产生的 JSON，含 `source`、`run_id`、`query_id`、`sample_id` 和独立的
+`execution_id`（例如同租户真实 Trace 标识），同批不得重复使用执行标识。来源真实性仍取决于采集方权限及审计。
+逐查询计算二元质量判据符合数和单侧 95% Wilson 下界。合理的措辞变化可以通过，硬约束与负对照任何一次违规则失败；
+样本缺失、Judge 不可用或标注无法关联视为证据不足。置信下界依赖独立采样；同一对话的重复答案、缓存复用与转录均不可当成独立样本。
+当前脚本复核评分记录和冻结口径；采集与标注工作须由实际执行者或独立评估方完成，浏览器展示不能替代 Trace。
 
 - 任何一条查询的重复结果不一致：标记 `flaky`，不得判通过。
 - 正向对照全部未命中：功能在受控条件下不可用，用例失败。

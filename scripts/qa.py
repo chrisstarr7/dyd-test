@@ -15,6 +15,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+import qa_api
+
 from qa_browser import PRIVATE_TEXT, SECRET_KEY, read_capture, redact_data, result_from_capture, validate_capture
 from qa_contract import check_page, check_plan, check_result, digest, evidence_file, index_objects, objects, text, url_key
 from qa_fixtures import (
@@ -22,7 +24,7 @@ from qa_fixtures import (
 )
 from qa_matrix import LAYER_LABELS, is_nondeterministic, review as review_matrix, validate_plan
 from qa_plan import check_dependencies, coverage_gaps, freeze, review_obligations, verify_frozen
-from qa_release import review_admission, review_defects
+from qa_release import review_admission, review_defects, root_cause_proof
 from qa_risk import review_risks
 
 
@@ -80,6 +82,10 @@ def cmd_init(args):
         "cases_file": "",
         "requirements_file": "",
     }
+    if args.project_id:
+        if not re.fullmatch(r"[a-f0-9]{32}", args.project_id):
+            raise SystemExit("项目 ID 须为 32 位小写十六进制")
+        run["project_id"] = args.project_id
     previous = load_json(target / "run.json") if (target / "run.json").exists() else None
     if previous is None or previous.get("fixture_contract"):
         run["fixture_contract"] = 1
@@ -238,6 +244,10 @@ def verify_dependencies(case, results, sampled_at, session):
 
 def evaluate(directory, run, case, pages, criteria, observation, context=None):
     page = pages.get(case.get("page"))
+    if case.get("layer") == "api":
+        if run.get("qa_contract") != 2 or not page or not isinstance(observation, dict):
+            raise ValueError("API 证据需要冻结计划、登记的目标与结构化采集")
+        return qa_api.result(directory, run, case, page, observation.get("capture"))
     action = operation(run, case)
     capture_path = None
     if run.get("qa_contract") == 2:
@@ -324,7 +334,8 @@ def cmd_record(args):
             context = load_context(directory) if operation(run, case) != "read" or case.get("actor") == "fixture" else None
             calculated, fingerprints, observation = evaluate(directory, run, case, pages, criteria, observation, context)
             if run.get("assurance_contract") == 1 and case.get("depends_on"):
-                verify_dependencies(case, assess(directory)["results"], observation["sampled_at"], observation["session"])
+                verify_dependencies(case, assess(directory)["results"],
+                                    observation.get("started_at", observation["sampled_at"]), observation["session"])
             if state == "observed":
                 state = calculated
             if strict and state == "passed":
@@ -364,6 +375,47 @@ def cmd_record(args):
     with (directory / "execution.jsonl").open("a", encoding="utf-8") as output:
         output.write(json.dumps(rec, ensure_ascii=False) + "\n")
     print("已记录", args.case, state)
+    return state
+
+
+def cmd_api(args):
+    directory = run_dir(Path(args.dir))
+    try:
+        with qa_api.run_lock(directory):
+            record_api(args, directory)
+    except qa_api.Blocked as exc:
+        print(str(exc))
+        raise SystemExit(2) from None
+
+
+def record_api(args, directory):
+    """在运行锁内完成执行及记录，避免恢复和采集交错。"""
+    run = load_json(directory / "run.json")
+    cases = load_cases(directory / "test-cases.json")
+    pages, errors = load_pages(directory)
+    try:
+        if errors or run.get("qa_contract") != 2:
+            raise ValueError("API 执行需要新版冻结计划")
+        verify_frozen(directory, run, load_json(directory / "requirements.json"), cases, pages)
+        case = next((item for item in cases if item["id"] == args.case and item.get("layer") == "api"), None)
+        if case is None:
+            raise ValueError("用例未登记为 API 执行层")
+        if case.get("depends_on") and args.recover is None:
+            verify_dependencies(case, assess(directory)["results"], datetime.now(timezone.utc).isoformat(), None)
+        path, error = qa_api.execute(directory, run, case, pages[case["page"]], args.output, args.allow_origin,
+                                     args.allow_local_write, args.recover)
+    except (OSError, ValueError, TypeError) as exc:
+        raise SystemExit(str(exc)) from None
+    if args.recover is not None:
+        print(f"已核验夹具回收：{path}")
+        return
+    options = dict(vars(args), state="observed", result=str(path), blocker_kind=None, unblock=None)
+    if error:
+        options.update(state="blocked", note=f"{error} · 证据 {path.relative_to(directory.resolve()).as_posix()}",
+                       blocker_kind="tool", unblock="恢复授权的身份、连接或依赖后重新使用新证据路径执行")
+    state = cmd_record(argparse.Namespace(**options))
+    if state != "passed":
+        raise SystemExit(1 if state == "failed" else 2)
 
 
 def cmd_check_page(args):
@@ -444,10 +496,30 @@ def cmd_defect(args):
     defects = load_json(d / "defects.json")
     if any(x.get("id") == args.id for x in defects):
         raise SystemExit(f"缺陷编号重复（去重）：{args.id}")
-    defects.append({
+    defect = {
         "id": args.id, "title": redact_text(args.title), "severity": args.severity,
         "status": args.status, "case_ids": args.case or [], "ts": now_iso(),
-    })
+    }
+    if args.impact or args.hypothesis:
+        review = assess(d)
+        observations = {}
+        for case_id in args.case:
+            record = review["results"].get(case_id, {})
+            if record.get("state") != "failed":
+                continue
+            case, captured = review["cases"][case_id], record["observation"]
+            observations[case_id] = {"layer": captured.get("layer"), "environment": review["run"]["url"],
+                                     "version": review["run"]["version"], "reproduction": case["steps"],
+                                     "differences": {
+                                         key: {"expected": case["expected"][key], **assertion}
+                                         for key, assertion in captured["assertions"].items()
+                                         if digest(case["expected"][key]) != digest(assertion["actual"])
+                                     }, "evidence": captured.get("capture"), "target": case["page"]}
+        defect["investigation"] = redact_data({
+            "impact": redact_text(args.impact), "hypothesis": redact_text(args.hypothesis),
+            "root_cause": "suspected" if args.hypothesis else "unknown", "observations": observations,
+        })
+    defects.append(defect)
     dump_json(d / "defects.json", defects)
     print("已记录缺陷", args.id)
 
@@ -460,6 +532,12 @@ def cmd_close_defect(args):
     if run.get("qa_contract") != 2 or len(found) != 1:
         raise SystemExit("新版运行须有唯一的待关闭缺陷")
     record = dict(found[0], status="closed", fix_version=args.fix_version, retest_case_id=args.retest_case)
+    if args.root_cause_record:
+        try:
+            proof = root_cause_proof(directory, run, record, args.root_cause_record)
+        except (OSError, ValueError, TypeError) as error:
+            raise SystemExit(str(error)) from None
+        record["investigation"] = {**record.get("investigation", {}), "root_cause": "confirmed", "proof": proof}
     reasons = review_defects(directory, run, [record], review["results"])
     if reasons:
         raise SystemExit("；".join(reasons))
@@ -540,6 +618,9 @@ def assess(directory):
     except (OSError, ValueError) as error:
         fixture_context = None
         reasons.append(f"测试数据台账无法核验：{error}")
+    cleanup_errors, cleanup_entries = qa_api.check_cleanup(directory, run, cases, pages)
+    reasons.extend(cleanup_errors)
+    fixture_entries.extend(cleanup_entries)
     latest = {}
     last_measurement = {}
     history = {key: [] for key in cases}
@@ -601,8 +682,9 @@ def assess(directory):
                 if calculated != state or fingerprints != record.get("fingerprints") or observation != recomputed:
                     raise ValueError("断言、页面计划或证据与记录时不一致")
                 if assured and case.get("depends_on"):
-                    verify_dependencies(case, results, recomputed["sampled_at"], recomputed["session"])
-                    if action != "read":
+                    verify_dependencies(case, results, recomputed.get("started_at", recomputed["sampled_at"]),
+                                        recomputed["session"])
+                    if action != "read" and case.get("layer") != "api":
                         sample = fixture_context[2]["attempts"][case_id]["before"]["path"]
                         _, before = read_capture(directory, sample)
                         verify_dependencies(case, results, before["time"], before["session"])
@@ -739,6 +821,13 @@ def cmd_gate(args):
     result = assess(directory)["gate"]
     dump_json(directory / "gate.json", result)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.scope == "test":
+        outcome = result.get("test_outcome")
+        if outcome is None:
+            raise SystemExit(2)
+        if outcome != "passed":
+            raise SystemExit(1 if outcome == "failed" else 2)
+        return
     if result["verdict"] != "pass":
         raise SystemExit(1)
 
@@ -808,9 +897,14 @@ def format_report(review):
             state = "不稳定" if matrix.get("flaky") else ("通过" if matrix.get("passed") else "未通过")
             lines.append(f"- {case_id} · {matrix.get('kind')} · {matrix.get('queries')} 查询"
                          f" × {matrix.get('repeats')} 次 · {state}")
+            if matrix.get("evidence_scope"):
+                lines.append(f"  - 证据范围：{matrix['evidence_scope']}")
             for item in matrix.get("items", []):
                 layers = "、".join(LAYER_LABELS.get(layer, layer) for layer in item.get("layers", []))
                 suffix = f" · 失败层 {layers}" if layers else ""
+                if "lower_bound" in item:
+                    suffix += (f" · 单侧 95% Wilson 下界 {item['lower_bound']:.1%}"
+                               f"（质量阈值 {item['min_lower_bound']:.1%}；负对照仍逐条核验）")
                 if item.get("role") == "negative":
                     outcome = (f"未误命中 {item.get('matched')}/{item.get('repeats')}"
                                if item.get("matched") == item.get("repeats")
@@ -837,9 +931,11 @@ def format_report(review):
             continue
         case = review["cases"][case_id]
         observation = record["observation"]
-        layer = {"online_ui": "在线界面", "offline_ui": "隔离客户端"}.get(observation.get("layer"))
+        layer = {"online_ui": "在线界面", "offline_ui": "隔离客户端", "api": "HTTP/API"}.get(observation.get("layer"))
         suffix = f" · {layer}" if layer else ""
         lines.append(f"- {case_id} · {case['page']} · {observation['role']} · {observation['url']}{suffix}")
+        if observation.get("tool"):
+            lines.append(f"  - 采集工具 {observation['tool']} · 采样时间 {observation.get('sampled_at', '见采集文件')}")
         if (observation.get("matrix") or {}).get("passed") is False:
             lines.append("  - 矩阵门禁未通过；单项页面检查通过不代表召回结论通过")
         if observation.get("baseline_evidence"):
@@ -855,9 +951,25 @@ def format_report(review):
         for key, assertion in observation["assertions"].items():
             expected = json.dumps(case["expected"][key], ensure_ascii=False)
             actual = json.dumps(assertion["actual"], ensure_ascii=False)
-            lines.append(f"  - {key} 预期 {expected}，实测 {actual}，证据 {assertion['evidence']}")
+            source = f" · 来源 {assertion['source']}" if assertion.get("source") else ""
+            lines.append(f"  - {key} 预期 {expected}，实测 {actual}，证据 {assertion['evidence']}{source}")
             if "raw_ms" in assertion:
                 lines.append(f"    - 本次导航耗时 {assertion['raw_ms']} ms，计划上限 {assertion['max_ms']} ms")
+    investigated = [defect for defect in review["defects"] if isinstance(defect.get("investigation"), dict)]
+    if investigated:
+        lines += ["", "## 缺陷定位"]
+        for defect in investigated:
+            investigation = defect["investigation"]
+            status = {"suspected": "疑似", "confirmed": "已确认"}.get(investigation.get("root_cause"), "未知")
+            if status == "已确认" and (defect.get("status") != "closed" or
+                    f"根因确认凭据无法核验：{defect['id']}" in gate.get("test_reasons", gate["reasons"])):
+                status = "证据失效"
+            lines.append(f"- {defect['id']} · 根因{status} · {investigation.get('impact') or '影响待复核'}")
+            if investigation.get("hypothesis"):
+                lines.append(f"  - 待验证假设：{investigation['hypothesis']}")
+            for key, finding in investigation.get("observations", {}).items():
+                lines.append(f"  - {key} · {finding['layer']} · 实测差异 {', '.join(finding['differences'])}"
+                             f" · 证据 {finding['evidence']}")
     attempts = [(key, entries) for key, entries in review["history"].items()
                 if len(entries) > 1 or any(item.get("note") for item in entries)]
     if attempts:
@@ -930,6 +1042,7 @@ def build_parser():
 
     s = sub.add_parser("init", help="初始化任务目录")
     s.add_argument("--project", required=True)
+    s.add_argument("--project-id", help="可选稳定项目 ID，用于已关闭缺陷派生经验")
     s.add_argument("--run-id", default="")
     s.add_argument("--mode", default="full", choices=["full", "targeted", "regression"])
     s.add_argument("--url", default="")
@@ -990,6 +1103,18 @@ def build_parser():
     s.add_argument("--unblock", help="解除本次阻塞所需的可确认条件")
     s.set_defaults(func=cmd_record)
 
+    s = sub.add_parser("api", help="执行冻结的 HTTP 验收用例、采集并记录")
+    for field in ("dir", "case", "allow-origin"):
+        s.add_argument(f"--{field}", required=True)
+    target = s.add_mutually_exclusive_group(required=True)
+    target.add_argument("--output")
+    target.add_argument("--recover", metavar="SETTLEMENT_REFERENCE")
+    s.add_argument("--retry-reason", choices=["observation_invalid", "transient", "fix_verified"])
+    s.add_argument("--note", default="")
+    s.add_argument("--defect", nargs="*", default=[])
+    s.set_defaults(func=cmd_api)
+    s.add_argument("--allow-local-write", action="store_true")
+
     s = sub.add_parser("defect", help="记录缺陷（按编号去重）")
     s.add_argument("--dir", required=True)
     s.add_argument("--id", required=True)
@@ -997,11 +1122,14 @@ def build_parser():
     s.add_argument("--severity", required=True)
     s.add_argument("--status", default="new")
     s.add_argument("--case", nargs="*", default=[])
+    s.add_argument("--impact", default="")
+    s.add_argument("--hypothesis", default="")
     s.set_defaults(func=cmd_defect)
 
     s = sub.add_parser("close-defect", help="依据当前版本的通过回归关闭缺陷")
     for field in ("dir", "id", "fix-version", "retest-case"):
         s.add_argument(f"--{field}", required=True)
+    s.add_argument("--root-cause-record", help="来自授权责任方、绑定本轮缺陷和因果证据的确认记录")
     s.set_defaults(func=cmd_close_defect)
 
     s = sub.add_parser("stats", help="从结构化记录计算统计")
@@ -1010,6 +1138,7 @@ def build_parser():
 
     s = sub.add_parser("gate", help="质量门禁判定")
     s.add_argument("--dir", required=True)
+    s.add_argument("--scope", choices=("release", "test"), default="release")
     s.set_defaults(func=cmd_gate)
 
     s = sub.add_parser("report", help="生成报告")

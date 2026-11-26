@@ -81,7 +81,7 @@ def _review_dimensions(raw, read, run):
 def _review_layers(raw, read):
     if not isinstance(raw, dict):
         raise ValueError("blocked_layers 必须是对象")
-    layers = {name: {"status": "supported"} for name in sorted(LAYERS)}
+    layers = {name: {"status": "supported"} for name in sorted(LAYERS | {"api"})}
     for name, entry in raw.items():
         if (name in layers or not re.fullmatch(r"[a-z][a-z0-9_]*", name)
                 or not isinstance(entry, dict) or not _confirmed(entry.get("reason"))):
@@ -223,7 +223,7 @@ def review_risks(directory, run, cases, results):
     path = directory / RISK_REVIEW_FILE
     summary = {"status": "not_provided", "plan_sha256": None, "source": None,
                "dimensions": {name: {"status": "unreviewed"} for name in DIMENSIONS},
-               "layers": {name: {"status": "supported"} for name in sorted(LAYERS)}, "risks": {}}
+               "layers": {name: {"status": "supported"} for name in sorted(LAYERS | {"api"})}, "risks": {}}
     try:
         path.lstat()
     except FileNotFoundError:
